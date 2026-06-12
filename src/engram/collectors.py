@@ -88,6 +88,7 @@ class CovarianceCollector:
         self._proj: Dict[int, torch.Tensor] = {}                       # H -> random fingerprint vector
         self._ref: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}   # H -> (fingerprint[N], mask[N])
         self._routed_mask: Optional[torch.Tensor] = None
+        self._storage_device: Optional[torch.device] = None  # resolved in __enter__
         self._hook_handles: List[Any] = []
 
     def set_mask(self, mask: Optional[torch.Tensor]) -> None:
@@ -136,6 +137,17 @@ class CovarianceCollector:
         raise ValueError(f"can't align mask: a layer received {n}/{n_full} rows and no reference.")
 
     def __enter__(self) -> "CovarianceCollector":
+        # storage_device=None (default) follows the model's device: fastest, since
+        # each batch's D×D is accumulated in place with no GPU->CPU transfer. Set
+        # "cpu" when the covariances don't fit in VRAM (large/wide models).
+        storage = self.config.storage_device
+        if storage is None:
+            try:
+                storage = next(self.model.parameters()).device
+            except StopIteration:
+                storage = torch.device("cpu")
+        self._storage_device = storage
+
         for name, module in self.model.named_modules():
             if not (
                 _module_name_matches(name, self.target_modules)
@@ -150,7 +162,7 @@ class CovarianceCollector:
             absorb = self.config.absorb_bias and getattr(module, "bias", None) is not None
             dim = handler.get_input_dim(module, absorb_bias=absorb)
             self.covariance_matrices[name] = torch.zeros(
-                (dim, dim), device=self.config.storage_device, dtype=self.config.precision
+                (dim, dim), device=self._storage_device, dtype=self.config.precision
             )
 
             def make_hook(layer_name: str, layer_handler: LayerHandler, absorb_bias: bool):
@@ -162,7 +174,7 @@ class CovarianceCollector:
                     if sel is not None:
                         x = x[sel]
                     self.covariance_matrices[layer_name].add_(
-                        (x.mT @ x).to(self.config.storage_device)
+                        (x.mT @ x).to(self._storage_device)
                     )
 
                 return hook

@@ -90,7 +90,7 @@ Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU
 
 | field | default | purpose |
 |---|---|---|
-| `storage_device` | `cpu` | where covariance matrices are held (CPU keeps wide `D×D` off VRAM) |
+| `storage_device` | model's device | where covariances are held; set `"cpu"` if the `D×D` matrices don't fit in VRAM (large models) |
 | `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
 | `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
 

@@ -392,3 +392,17 @@ def test_target_layers_deprecated_alias():
         )
     assert set(cov) == {"layers.1.up_proj"}
     assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+
+
+# --------------------------------------------------------------------------- #
+# T12: storage_device defaults to None, which follows the model's device — so on
+# a CPU model the covariances are accumulated on CPU (no config needed).
+# --------------------------------------------------------------------------- #
+def test_default_storage_follows_model_device():
+    assert EditorConfig().storage_device is None
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(6, 3, bias=False)).eval()  # lives on CPU
+    cov = EngramEditor(model, EditorConfig(precision=torch.float64)).collect_statistics(
+        DataLoader(TensorDataset(torch.randn(32, 6)), batch_size=8)
+    )
+    assert cov["0"].device.type == "cpu"  # followed the (CPU) model, not pinned elsewhere
