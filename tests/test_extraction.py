@@ -16,10 +16,8 @@ from engram import EditorConfig, EngramEditor, MaskedLinearHandler
 
 def cpu_cfg(**kw) -> EditorConfig:
     base = dict(
-        device=torch.device("cpu"),
         storage_device=torch.device("cpu"),
         precision=torch.float64,
-        verbose=False,
     )
     base.update(kw)
     return EditorConfig(**base)

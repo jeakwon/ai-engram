@@ -170,10 +170,8 @@ def test_tofu_forget10_plain_and_adaptive():
     # --- package API: answer-token-masked covariance, then engram weights ---
     masked = MaskedLinearHandler()
     cfg = EditorConfig(
-        device=torch.device(device),
         storage_device=torch.device(device),
         precision=torch.float32,
-        verbose=False,
     )
     editor = EngramEditor(base, cfg)
     editor.registry[nn.Linear] = masked  # answer-token-only covariance

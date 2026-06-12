@@ -101,7 +101,7 @@ def test_tofu_official_overall():
     base = load(BASE_ID)
     masked = MaskedLinearHandler()
     cfg = EditorConfig(
-        device=torch.device(device), storage_device=torch.device(device), precision=torch.float32, verbose=False
+        storage_device=torch.device(device), precision=torch.float32
     )
     editor = EngramEditor(base, cfg)
     editor.registry[nn.Linear] = masked

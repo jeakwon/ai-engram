@@ -53,10 +53,18 @@ class EngramEditor:
         if conv1d is not None:
             self.registry[conv1d] = Conv1DHandler()
 
+    @property
+    def _model_device(self) -> torch.device:
+        """Device the model lives on — covariances are computed and the solve runs here."""
+        try:
+            return next(self.model.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
+
     # ---- forward helpers (support tensor / tuple / HF dict batches) ----
     def _move_to_device(self, data: Any) -> Any:
         if torch.is_tensor(data):
-            return data.to(self.config.device)
+            return data.to(self._model_device)
         if isinstance(data, dict):
             return {k: self._move_to_device(v) for k, v in data.items()}
         if isinstance(data, (list, tuple)):
@@ -135,7 +143,7 @@ class EngramEditor:
 
         with collector, torch.inference_mode():
             for batch in tqdm(
-                dataloader, disable=not self.config.verbose, desc="Collecting covariance"
+                dataloader, disable=None, desc="Collecting covariance"
             ):
                 if mask_fn is not None:
                     collector.set_mask(mask_fn(batch))
@@ -191,7 +199,7 @@ class EngramEditor:
 
         for layer_name, pos_cov in tqdm(
             target_covariances.items(),
-            disable=not self.config.verbose,
+            disable=None,
             desc="Computing engram",
         ):
             if layer_name not in total_covariance or layer_name not in modules:
@@ -202,7 +210,7 @@ class EngramEditor:
             if handler is None:
                 continue
 
-            dev, prec = self.config.device, self.config.precision
+            dev, prec = self._model_device, self.config.precision
             sum_cov = total_covariance[layer_name].to(dev, dtype=prec)
             pos_cov = pos_cov.to(dev, dtype=prec)
 
