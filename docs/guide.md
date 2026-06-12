@@ -56,7 +56,9 @@ editor.collect_statistics(
 `mask_fn` is applied at the collector, so it works for **every** layer type —
 `nn.Linear`, GPT-2 `Conv1D`, and any custom handler. It drops the non-selected
 token rows before accumulation (and before the bias-absorption constant, so the
-bias term's count equals the number of selected tokens).
+bias term's count equals the number of selected tokens). **MoE models work too**:
+a routed expert layer recovers its tokens by matching them back to the router
+input, so the mask reaches the experts automatically — no configuration.
 
 !!! note "Legacy"
     `MaskedLinearHandler` (`editor.registry[nn.Linear] = MaskedLinearHandler()`)
