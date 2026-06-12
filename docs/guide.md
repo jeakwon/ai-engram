@@ -34,11 +34,20 @@ cov[name] += x.mT @ x      # D×D, on config.storage_device
   `torch.inference_mode()`.
 - **Streaming.** Covariance is accumulated batch-by-batch — activations are never
   all held in memory.
-- **CPU/GPU split.** Matrices live on `config.storage_device` (CPU by default) so
-  wide layers don't pin large `D×D` tensors in VRAM. Compute happens on the
-  model's own device.
+- **Covariance placement.** Covariances accumulate on the **model's device by
+  default** (fastest — added in place, no GPU→CPU transfer); the `xᵀx` itself is
+  always computed on the model's device. Set `storage_device="cpu"` when they
+  don't fit in VRAM (see the tip below).
 - **Precision.** Accumulated in `config.precision` (`float64` default) for
   numerical stability; use `float32` for large LLMs to halve memory.
+
+!!! tip "When to move covariances to CPU"
+    Covariances default to the **model's device** and cost `Σₗ Dₗ²` *extra* memory
+    (per-layer `D×D`, independent of batch size). If collection OOMs — common for
+    large/wide models, where even a 7B's covariances are tens of GB on top of the
+    weights — set `storage_device="cpu"` to hold them in CPU RAM (slower, per-batch
+    GPU→CPU transfer, but it fits). `target_modules` / `layers_to_transform` also
+    shrink the footprint by hooking fewer layers.
 
 ### Answer-token masking (LLMs)
 

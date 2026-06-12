@@ -61,6 +61,12 @@ class EngramEditor:
         except StopIteration:
             return torch.device("cpu")
 
+    @property
+    def _storage_device(self) -> Any:
+        """Where covariances are held: ``config.storage_device``, or the model device if None."""
+        sd = self.config.storage_device
+        return sd if sd is not None else self._model_device
+
     # ---- forward helpers (support tensor / tuple / HF dict batches) ----
     def _move_to_device(self, data: Any) -> Any:
         if torch.is_tensor(data):
@@ -237,5 +243,5 @@ class EngramEditor:
         logger.info("Saved statistics to %s", path)
 
     def load_statistics(self, path: Union[str, Path]) -> Stats:
-        """Load a statistics dict onto ``config.storage_device``."""
-        return torch.load(path, map_location=self.config.storage_device, weights_only=True)
+        """Load a statistics dict onto the storage device (the model's device by default)."""
+        return torch.load(path, map_location=self._storage_device, weights_only=True)
