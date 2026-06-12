@@ -16,6 +16,11 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# Node.js 20 is deprecated on GitHub runners (forced to Node 24 from 2026-06-16);
+# opt the JS actions into Node 24 now.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest
