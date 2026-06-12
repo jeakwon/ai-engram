@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-engram — covariance-based engram extraction for LLM editing</title>
+<meta name="description" content="Minimal, closed-form covariance-based engram extraction for editing HuggingFace LLMs. Forward-only, no gradient descent.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<style>
+  :root{
+    --bg:#0b0d12; --bg2:#11141c; --card:#141823; --line:#222838;
+    --fg:#e6e9f0; --mut:#9aa3b8; --dim:#6b7488;
+    --acc:#8b7cff; --acc2:#5ad0e0; --good:#4ade80;
+    --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
+       line-height:1.65;-webkit-font-smoothing:antialiased;font-size:16px}
+  a{color:var(--acc2);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px}
+  code,pre{font-family:var(--mono)}
+  h1,h2,h3{line-height:1.2;letter-spacing:-.01em}
+  h2{font-size:1.6rem;margin:0 0 18px}
+  section{padding:54px 0;border-top:1px solid var(--line)}
+  .mut{color:var(--mut)}
+
+  /* hero */
+  header{padding:80px 0 64px;background:
+     radial-gradient(900px 420px at 50% -120px,rgba(139,124,255,.20),transparent 70%),
+     radial-gradient(700px 360px at 85% 0,rgba(90,208,224,.10),transparent 70%);
+     text-align:center}
+  .logo{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);
+        font-weight:600;color:var(--mut);font-size:.95rem;margin-bottom:18px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--acc);
+       box-shadow:0 0 14px 2px var(--acc)}
+  header h1{font-size:clamp(2.4rem,6vw,3.7rem);margin:.1em 0 .15em;
+       background:linear-gradient(120deg,#fff,#b9b0ff 55%,#5ad0e0);
+       -webkit-background-clip:text;background-clip:text;color:transparent}
+  .tag{font-size:clamp(1.05rem,2.4vw,1.3rem);color:var(--mut);max-width:680px;margin:0 auto 26px}
+  .tag b{color:var(--fg);font-weight:600}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:10px}
+  .btn{padding:11px 20px;border-radius:10px;font-weight:600;font-size:.95rem;
+       border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer;transition:.15s}
+  .btn:hover{border-color:var(--acc);text-decoration:none;transform:translateY(-1px)}
+  .btn.primary{background:linear-gradient(120deg,var(--acc),#6c5ce7);border-color:transparent;color:#fff}
+  .install{margin:30px auto 0;max-width:440px;display:flex;align-items:center;gap:10px;
+       background:#0e1016;border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+       font-family:var(--mono);font-size:.92rem;justify-content:space-between}
+  .install span::before{content:"$ ";color:var(--dim)}
+  .copy{border:none;background:transparent;color:var(--dim);cursor:pointer;font-size:.85rem}
+  .copy:hover{color:var(--acc2)}
+
+  /* formula */
+  .formula{margin:34px auto 0;max-width:620px;background:var(--card);border:1px solid var(--line);
+       border-radius:14px;padding:22px;text-align:center;font-family:var(--mono);font-size:1.25rem}
+  .formula .eq{color:var(--fg)}
+  .formula .v{color:var(--acc)} .formula .v2{color:var(--acc2)}
+  .formula small{display:block;color:var(--dim);font-family:var(--sans);font-size:.82rem;margin-top:12px}
+
+  /* features */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 20px 18px}
+  .card h3{margin:.1em 0 .4em;font-size:1.06rem}
+  .card .ic{font-size:1.3rem;margin-bottom:6px}
+  .card p{margin:0;color:var(--mut);font-size:.93rem}
+
+  /* steps */
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;counter-reset:s}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;position:relative}
+  .step::before{counter-increment:s;content:counter(s);position:absolute;top:-12px;left:18px;
+       width:26px;height:26px;border-radius:50%;background:var(--acc);color:#fff;font-weight:700;
+       display:grid;place-items:center;font-size:.85rem}
+  .step h3{margin:.3em 0 .35em;font-size:1.02rem}
+  .step code{color:var(--acc2);font-size:.86rem}
+  .step p{margin:.3em 0 0;color:var(--mut);font-size:.9rem}
+
+  pre{background:#0e1016;border:1px solid var(--line);border-radius:12px;overflow:auto;margin:0;
+      padding:18px 20px;font-size:.86rem;line-height:1.55}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .twocol h3{font-size:.92rem;color:var(--mut);font-weight:600;margin:0 0 8px;font-family:var(--mono)}
+
+  table{width:100%;border-collapse:collapse;font-size:.92rem;margin-top:4px}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:600} td{color:var(--fg)}
+  td.up{color:var(--good);font-weight:600}
+  caption{caption-side:bottom;color:var(--dim);font-size:.83rem;padding-top:12px;text-align:left}
+
+  ul.road{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+  ul.road li{padding-left:26px;position:relative;color:var(--mut)}
+  ul.road li::before{content:"→";position:absolute;left:0;color:var(--acc)}
+  ul.road li b{color:var(--fg)}
+
+  footer{border-top:1px solid var(--line);padding:34px 0 56px;color:var(--dim);font-size:.88rem;text-align:center}
+  .pill{display:inline-block;font-family:var(--mono);font-size:.74rem;color:var(--acc);
+        border:1px solid var(--line);border-radius:999px;padding:3px 11px;margin-bottom:18px;background:#12101e}
+  @media(max-width:640px){.twocol{grid-template-columns:1fr}section{padding:42px 0}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="logo"><span class="dot"></span> ai-engram</div>
+    <h1>Isolate what a model knows.<br>Then edit it.</h1>
+    <p class="tag">Minimal, <b>closed-form</b> covariance-based <b>engram extraction</b> for editing
+      HuggingFace LLMs. Forward-only statistics, one pseudo-inverse per layer —
+      <b>no gradient descent, no labels</b>.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/jeakwon/ai-engram">GitHub</a>
+      <a class="btn" href="https://pypi.org/project/ai-engram/">PyPI</a>
+      <a class="btn" href="#quickstart">Quickstart</a>
+    </div>
+    <div class="install">
+      <span id="cmd">pip install "ai-engram[llm]"</span>
+      <button class="copy" onclick="navigator.clipboard.writeText('pip install &quot;ai-engram[llm]&quot;');this.textContent='copied'">copy</button>
+    </div>
+    <div class="formula">
+      <span class="eq"><span class="v">W_engram</span> = W · <span class="v2">Σ_target</span> · pinv(<span class="v2">Σ_total</span>)</span>
+      <small>the slice of a layer's weights driven by the target data — subtract α·W_engram to remove it</small>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Why ai-engram</h2>
+    <div class="grid">
+      <div class="card"><div class="ic">🧮</div><h3>Closed-form</h3><p>One matrix product and a pseudo-inverse per layer. No optimization loop, no labels, no training.</p></div>
+      <div class="card"><div class="ic">⚡</div><h3>Forward-only</h3><p>Covariances gathered with forward pre-hooks — no backward pass, half the memory and compute of a training step.</p></div>
+      <div class="card"><div class="ic">🤗</div><h3>HF-native</h3><p>Works on Llama, Mistral, Qwen, Gemma, Phi… and the GPT-2 family (<code>Conv1D</code>) out of the box.</p></div>
+      <div class="card"><div class="ic">➕</div><h3>Bias-correct</h3><p>Bias absorption is automatic: affine layers <code>y=Wx+b</code> are edited exactly via homogeneous coordinates.</p></div>
+      <div class="card"><div class="ic">🎯</div><h3>Selective</h3><p>Answer-token masking and per-layer targeting — edit only the knowledge and the modules you mean to.</p></div>
+      <div class="card"><div class="ic">🪶</div><h3>Tiny</h3><p>A few hundred lines. <code>from engram import EngramEditor</code> and you're editing.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step"><h3>Collect</h3><code>collect_statistics()</code><p>Forward pre-hooks accumulate <code>Σ = Σ xᵀx</code> per layer over the forget set and the total set. No backward pass.</p></div>
+      <div class="step"><h3>Compute</h3><code>compute_engram_weights()</code><p>One pseudo-inverse per layer yields <code>W_engram</code> (and a bias engram for affine layers).</p></div>
+      <div class="step"><h3>Apply</h3><code>W − α·W_engram</code><p>A single subtraction removes the target knowledge and preserves the rest. <span class="mut">(Milestone&nbsp;2)</span></p></div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <h2>Quickstart</h2>
+    <div class="twocol">
+      <div>
+        <h3># any nn.Linear model</h3>
+<pre><code class="language-python">from engram import EngramEditor, EditorConfig
+
+editor = EngramEditor(model, EditorConfig())
+
+target = editor.collect_statistics(forget_loader)
+total  = editor.collect_statistics(total_loader)
+
+weight_engrams, bias_engrams = \
+    editor.compute_engram_weights(target, total)
+# weight_engrams[name].shape == layer.weight.shape</code></pre>
+      </div>
+      <div>
+        <h3># HuggingFace causal LLM (answer-token masked)</h3>
+<pre><code class="language-python">from engram import EngramEditor, EditorConfig, MaskedLinearHandler
+
+editor = EngramEditor(model, EditorConfig(precision=torch.float32))
+masked = MaskedLinearHandler()
+editor.registry[torch.nn.Linear] = masked
+
+def batch_fn(b):
+    masked.current_mask = b["labels"] != -100
+    return {"input_ids": b["input_ids"],
+            "attention_mask": b["attention_mask"]}
+
+g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn)
+g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
+weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="validation">
+  <div class="wrap">
+    <h2>Validated on TOFU unlearning</h2>
+    <p class="mut">Engram extraction on <code>tofu_Llama-3.2-1B-Instruct</code> (forget10), answer-token-masked,
+       edit applied at strength α. Answer-token NLL — forget should rise, retain should hold:</p>
+    <table>
+      <thead><tr><th>condition</th><th>forget NLL</th><th>retain NLL</th></tr></thead>
+      <tbody>
+        <tr><td>base (memorised)</td><td>0.13</td><td>0.14</td></tr>
+        <tr><td>plain &nbsp;(α=0.6)</td><td class="up">2.10 ↑</td><td>0.70</td></tr>
+        <tr><td>adaptive-norm (α=1.0, p=1)</td><td class="up">2.19 ↑</td><td>0.59</td></tr>
+      </tbody>
+      <caption>Strong, selective forgetting (forget degrades ~4× more than retain). Adaptive-norm forgets
+        more while preserving retain better — the paper's ordering (adaptive 0.818 &gt; plain 0.698 Overall).
+        Full official reproduction below.</caption>
+    </table>
+    <h3 style="font-family:var(--mono);color:var(--mut);margin:28px 0 8px;font-weight:600">Official 14-metric Overall — reproduces the paper</h3>
+    <table>
+      <thead><tr><th>condition</th><th>ai-engram</th><th>paper</th><th>diff</th></tr></thead>
+      <tbody>
+        <tr><td>gold (retain90)</td><td>0.998</td><td>0.998</td><td>0.000</td></tr>
+        <tr><td>plain &nbsp;(α=0.6)</td><td class="up">0.706</td><td>0.698</td><td>0.008</td></tr>
+        <tr><td>adaptive-norm (α=1.0, p=1)</td><td class="up">0.817</td><td>0.818</td><td>0.001</td></tr>
+      </tbody>
+      <caption>Rescaled against the finetuned base and the retain90 gold model — all within ~0.01 of paper.
+        <code>tests/test_tofu_official.py</code>, ~24&nbsp;min on one A100.</caption>
+    </table>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <h2>Roadmap</h2>
+    <span class="pill">Milestone 1 — extraction (shipping)</span>
+    <ul class="road">
+      <li><b>M2 — apply &amp; edit</b>: <code>editor.edit(...)</code> and a one-call <code>edit_llm(model, tok, forget, retain, strength)</code> helper</li>
+      <li><b>Adaptive scaling</b>: per-layer norm / Fisher edit strength</li>
+      <li><b>Registries</b>: TOFU / WMDP / MUSE models &amp; datasets by name</li>
+      <li><b>Metrics</b>: ROUGE, forget/retain, MIA</li>
+      <li><b>Vision</b>: <code>Conv2d</code> support for CNN / ViT</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <code>from engram import EngramEditor</code> &nbsp;·&nbsp; MIT licensed &nbsp;·&nbsp;
+    <a href="https://github.com/jeakwon/ai-engram">github.com/jeakwon/ai-engram</a>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+</body>
+</html>
