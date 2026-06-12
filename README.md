@@ -3,32 +3,24 @@
 [![PyPI](https://img.shields.io/pypi/v/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Docs](https://img.shields.io/badge/docs-jeakwon.github.io-7c4dff.svg)](https://jeakwon.github.io/ai-engram/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/jeakwon/ai-engram/blob/main/LICENSE)
 
-Minimal, efficient **covariance-based engram extraction** for editing neural
-networks — built for HuggingFace causal LLMs.
+**Closed-form, covariance-based engram extraction for editing HuggingFace LLMs** — forward-only, no gradient descent.
 
-An *engram* is the component of a layer's weights attributable to a target set
-of inputs. `ai-engram` isolates it in **closed form** (no gradient descent),
-from forward-only covariance statistics:
+An *engram* is the slice of a layer's weights attributable to a target set of inputs. `ai-engram` isolates it analytically:
 
 ```
 W_engram = W · Σ_target · pinv(Σ_total)
 ```
 
-- `Σ_target` — input covariance over the data you want to isolate (the "forget" set)
-- `Σ_total`  — input covariance over the reference/total set
-- one pseudo-inverse per layer; collection is forward-only (no backprop)
-- **bias absorption** is automatic: layers with a bias are edited as the affine
-  map `y = Wx + b` via homogeneous coordinates
+`Σ_target` and `Σ_total` are input covariances over the **forget** set and the **reference** set. Subtracting it — `W ← W − α·W_engram` — removes that knowledge while keeping the rest: fast, training-free **unlearning / model editing**.
 
-Subtracting the engram (`W ← W − α·W_engram`) removes the target knowledge while
-preserving the rest — the basis of fast, training-free unlearning / model editing.
+- **Closed-form** — one pseudo-inverse per layer; no optimization loop, no labels.
+- **Forward-only** — covariances via forward pre-hooks; no backprop.
+- **HF-native** — Llama, Mistral, Qwen, Gemma, Phi … and GPT-2 (`Conv1D`) out of the box.
+- **Affine-correct** — automatic bias absorption for bias-bearing layers.
 
-> **Milestone 1 (this release):** statistics collection + engram-weight
-> *extraction*. Applying the edit, a one-call `edit_llm` helper, adaptive
-> scaling, model registries, and eval metrics come in later milestones.
-> The extraction already reproduces TOFU unlearning — see [Validation](#validation).
+> **Milestone 1** (this release): statistics collection + engram **extraction**. Applying the edit, a one-call `edit_llm` helper, adaptive scaling, registries, and metrics come in later milestones — and the extraction already reproduces TOFU unlearning (see [Validation](#validation)).
 
 ## Install
 
@@ -36,145 +28,98 @@ preserving the rest — the basis of fast, training-free unlearning / model edit
 pip install ai-engram
 ```
 
-Installs `torch`, `tqdm`, and `transformers` — everything needed for HuggingFace
-LLMs (and GPT-2 `Conv1D`) out of the box. The distribution is `ai-engram`; the
-**import name is `engram`**.
+Pulls `torch`, `tqdm`, and `transformers` — HF LLMs and GPT-2 work out of the box. Distribution name `ai-engram`; **import name `engram`**.
 
 📖 **Documentation: <https://jeakwon.github.io/ai-engram/>**
 
 ## Quickstart
 
-Any `nn.Linear` model:
+Any `nn.Linear` (or GPT-2 `Conv1D`) model:
 
 ```python
 import torch
 from engram import EngramEditor, EditorConfig
 
-editor = EngramEditor(model, EditorConfig(precision=torch.float64))
+editor = EngramEditor(model, EditorConfig())
 
 target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
 total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
 
 weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
-# weight_engrams[name] has the same shape as the layer's .weight
-# bias_engrams[name]   is present only for bias-bearing layers
+# weight_engrams[name] matches the layer's .weight; bias_engrams[name] its .bias
 ```
 
-`collect_statistics` reads `batch[0]` by default; for models whose `forward`
-takes keyword args, pass a `batch_fn`.
-
-### HuggingFace causal LLMs
-
-Works out of the box for the mainstream `nn.Linear`-based decoders
-(Llama, Mistral, Qwen, Gemma, Phi, …) **and** the GPT-2 family, which uses
-HuggingFace's `Conv1D` (a transposed linear) — registered automatically.
+### HuggingFace LLM (answer-token masked)
 
 ```python
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from engram import EngramEditor, EditorConfig, MaskedLinearHandler
 
-tok = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16).eval()
-
 editor = EngramEditor(model, EditorConfig(precision=torch.float32))
-
-# accumulate covariance over answer tokens only (labels != -100)
 masked = MaskedLinearHandler()
-editor.registry[torch.nn.Linear] = masked
+editor.registry[torch.nn.Linear] = masked          # covariance over answer tokens only
 
-def batch_fn(batch):
-    masked.current_mask = batch["labels"] != -100
-    return {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
+def batch_fn(b):
+    masked.current_mask = b["labels"] != -100
+    return {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
 
-target_cov = editor.collect_statistics(forget_loader, batch_fn=batch_fn)
-total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
-weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
+g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn)
+g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
+weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)
 
-# applying the edit (Milestone 2 will provide this as `editor.edit(...)`):
+# apply — Milestone 2 will expose this as editor.edit(...)
 import copy
 edited = copy.deepcopy(model)
 mods = dict(edited.named_modules())
-with torch.no_grad():
-    for name, w in weight_engrams.items():
-        mods[name].weight.data -= (0.6 * w).to(mods[name].weight.dtype)
+for name, w in weight_engrams.items():
+    mods[name].weight.data -= (0.6 * w).to(mods[name].weight.dtype)
 ```
 
-Pass `target_layers=[...]` to `collect_statistics` to edit only specific modules
-(e.g. decoder MLPs).
+Restrict the edit to specific modules with `target_layers=[...]`. See the
+[Quickstart guide](https://jeakwon.github.io/ai-engram/quickstart/) for details.
 
 ## How it works
 
 | step | what | cost |
 |---|---|---|
-| 1. collect | forward pre-hooks accumulate `Σ = Σ xᵀx` per layer (no backward) | one forward pass over the data |
+| 1. collect | forward pre-hooks accumulate `Σ = Σ xᵀx` per layer | one forward pass, no backward |
 | 2. compute | `W_engram = W · Σ_target · pinv(Σ_total)` | one pseudo-inverse per layer |
 | 3. apply *(M2)* | `W ← W − α·W_engram` | a single subtraction |
 
-Efficiency is preserved end-to-end: forward-only hooks, in-place covariance
-accumulation, CPU/GPU split (covariances on `storage_device`), `float64`
-accumulation cast back to the model dtype, `inference_mode`, optional damping,
-selective `target_layers`, and answer-token masking for LLMs.
+Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), `float64` solve cast back to the model dtype, optional damping, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
 
-### Layer coverage
-
-| layer | handler | weight orientation |
-|---|---|---|
-| `nn.Linear` | `LinearHandler` | `[out, in]` |
-| HF `Conv1D` (GPT-2) | `Conv1DHandler` | `[in, out]` → transposed internally |
-| answer-token masking | `MaskedLinearHandler` | covariance over `labels != -100` |
-
-## Configuration (`EditorConfig`)
+### Configuration (`EditorConfig`)
 
 | field | default | purpose |
 |---|---|---|
 | `device` | cuda if available | device for the matmul + pseudo-inverse |
-| `storage_device` | cpu | where covariance matrices are accumulated/held |
+| `storage_device` | `cpu` | where covariance matrices are held |
 | `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
 | `damping_factor` | `0.0` | Tikhonov term `Σ_total + λI` for the pseudo-inverse |
-| `absorb_bias` | `True` | absorb bias into the edit (affine `y=Wx+b`) when a layer has one; bias-free layers unaffected |
+| `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
 | `verbose` | `True` | progress bars |
 
 ## Validation
 
-On the **TOFU forget10** unlearning benchmark with `tofu_Llama-3.2-1B-Instruct`
-(answer-token-masked covariance, edit applied at α), the package's engram
-extraction produces strong, *selective* forgetting — measured by answer-token
-NLL (forget should rise, retain should be preserved):
+On **TOFU forget10** with `tofu_Llama-3.2-1B-Instruct`, the engram extraction reproduces the paper's official 14-metric **Overall** within **~0.01**:
 
-| condition | forget NLL | retain NLL |
+| condition | ai-engram | paper |
 |---|---|---|
-| base (memorised) | 0.13 | 0.14 |
-| plain (α=0.6) | **2.10** (↑) | 0.70 |
-| adaptive-norm (α=1.0, p=1) | **2.19** (↑) | **0.59** |
+| gold (retain90) | 0.998 | 0.998 |
+| plain (α=0.6) | 0.706 | 0.698 |
+| adaptive-norm (α=1.0, p=1) | 0.817 | 0.818 |
 
-Adaptive-norm forgets *more* while preserving retain *better*.
-
-The full **official 14-metric Overall** (rescaled against the finetuned base and
-the `retain90` gold model) reproduces the paper almost exactly:
-
-| condition | ai-engram | paper | diff |
-|---|---|---|---|
-| gold (retain90) | 0.998 | 0.998 | 0.000 |
-| plain (α=0.6) | 0.706 | 0.698 | 0.008 |
-| adaptive-norm (α=1.0, p=1) | 0.817 | 0.818 | 0.001 |
-
-All within ~0.01 of the paper — see `tests/test_tofu_official.py` (~24 min on one A100).
-
-See [`tests/`](tests/) and [`examples/`](examples/) for runnable end-to-end code.
+Answer-token NLL confirms strong, *selective* forgetting — the forget set's NLL jumps ~16× while retain is preserved, and adaptive-norm beats plain on both axes. Runnable end-to-end in
+[`tests/`](https://github.com/jeakwon/ai-engram/tree/main/tests) and
+[`examples/`](https://github.com/jeakwon/ai-engram/tree/main/examples); see the [TOFU page](https://jeakwon.github.io/ai-engram/tofu/).
 
 ## API
 
-- `EngramEditor.collect_statistics(loader, target_layers=None, batch_fn=None) -> {name: Σ}`
-- `EngramEditor.merge_statistics(*stats) -> {name: Σ}` *(static; sum to build totals)*
-- `EngramEditor.compute_engram_weights(target_cov, total_cov) -> (weight_engrams, bias_engrams)`
-- `EngramEditor.save_statistics(stats, path)` / `load_statistics(path)`
+- `collect_statistics(loader, target_layers=None, batch_fn=None) -> {name: Σ}`
+- `compute_engram_weights(target_cov, total_cov) -> (weight_engrams, bias_engrams)`
+- `merge_statistics(*stats)` · `save_statistics(stats, path)` · `load_statistics(path)`
 
-Full documentation — **<https://jeakwon.github.io/ai-engram/>** —
-[API reference](https://jeakwon.github.io/ai-engram/api/) ·
-[Guide](https://jeakwon.github.io/ai-engram/guide/) ·
-[TOFU validation](https://jeakwon.github.io/ai-engram/tofu/).
+Full reference (auto-generated from docstrings): **[API docs](https://jeakwon.github.io/ai-engram/api/)**.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](https://github.com/jeakwon/ai-engram/blob/main/LICENSE) © Jeakwon Kim
