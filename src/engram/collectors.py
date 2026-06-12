@@ -14,13 +14,54 @@ the routing mask just computed. This is automatic and a no-op for dense models.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Type
+import re
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
 import torch.nn as nn
 
 from .config import EditorConfig
 from .handlers import LayerHandler, handler_for
+
+# Container names whose ".<name>.<idx>." segment carries the decoder-layer index,
+# scanned when layers_to_transform is set but layers_pattern is not (Llama="layers",
+# GPT-2="h", etc.). Mirrors PEFT/LoRA's layer-index selection.
+_COMMON_LAYER_PATTERNS = ("layers", "h", "blocks", "block", "layer")
+
+
+def _module_name_matches(name: str, target_modules: Optional[Union[str, List[str]]]) -> bool:
+    """LoRA/PEFT-style module match: None=all, str=regex (fullmatch), list=exact-or-dotted-suffix."""
+    if target_modules is None:
+        return True
+    if isinstance(target_modules, str):
+        return re.fullmatch(target_modules, name) is not None
+    return name in target_modules or any(name.endswith(f".{t}") for t in target_modules)
+
+
+def _layer_index_matches(
+    name: str,
+    layers_to_transform: Optional[Union[int, List[int]]],
+    layers_pattern: Optional[Union[str, List[str]]],
+) -> bool:
+    """PEFT-style index filter: True if the module's decoder-layer index is selected.
+
+    No-op when layers_to_transform is None. A module with no parseable layer index
+    (e.g. ``lm_head``) is excluded once an index filter is requested.
+    """
+    if layers_to_transform is None:
+        return True
+    want = {layers_to_transform} if isinstance(layers_to_transform, int) else set(layers_to_transform)
+    if isinstance(layers_pattern, str):
+        patterns = [layers_pattern]
+    elif layers_pattern:
+        patterns = list(layers_pattern)
+    else:
+        patterns = list(_COMMON_LAYER_PATTERNS)
+    for pat in patterns:
+        m = re.search(rf"(?:^|\.){pat}\.(\d+)(?:\.|$)", name)
+        if m is not None:
+            return int(m.group(1)) in want
+    return False
 
 
 class CovarianceCollector:
@@ -31,12 +72,16 @@ class CovarianceCollector:
         model: nn.Module,
         config: EditorConfig,
         registry: Dict[Type[nn.Module], LayerHandler],
-        target_layers: Optional[List[str]] = None,
+        target_modules: Optional[Union[str, List[str]]] = None,
+        layers_to_transform: Optional[Union[int, List[int]]] = None,
+        layers_pattern: Optional[Union[str, List[str]]] = None,
     ) -> None:
         self.model = model
         self.config = config
         self.registry = registry
-        self.target_layers = target_layers
+        self.target_modules = target_modules
+        self.layers_to_transform = layers_to_transform
+        self.layers_pattern = layers_pattern
         self.covariance_matrices: Dict[str, torch.Tensor] = {}
         self.current_mask: Optional[torch.Tensor] = None
         # per-batch routing-alignment state (used only when a layer sees a subset)
@@ -92,7 +137,10 @@ class CovarianceCollector:
 
     def __enter__(self) -> "CovarianceCollector":
         for name, module in self.model.named_modules():
-            if self.target_layers and name not in self.target_layers:
+            if not (
+                _module_name_matches(name, self.target_modules)
+                and _layer_index_matches(name, self.layers_to_transform, self.layers_pattern)
+            ):
                 continue
 
             handler = handler_for(self.registry, module)

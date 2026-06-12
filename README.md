@@ -71,7 +71,9 @@ for name, w in weight_engrams.items():
     mods[name].weight.data -= (0.6 * w).to(mods[name].weight.dtype)
 ```
 
-Restrict the edit to specific modules with `target_layers=[...]`. See the
+Restrict the edit to specific modules with `target_modules` — the same convention
+as LoRA/PEFT (`["down_proj"]` by name suffix, or a regex string), plus
+`layers_to_transform` for decoder-layer indices. See the
 [Quickstart guide](https://jeakwon.github.io/ai-engram/quickstart/) for details.
 
 ## How it works
@@ -111,7 +113,7 @@ Answer-token NLL confirms strong, *selective* forgetting — the forget set's NL
 
 ## API
 
-- `collect_statistics(loader, target_layers=None, batch_fn=None) -> {name: Σ}`
+- `collect_statistics(loader, target_modules=None, batch_fn=None, mask_fn=None, layers_to_transform=None) -> {name: Σ}`
 - `compute_engram_weights(target_cov, total_cov) -> (weight_engrams, bias_engrams)`
 - `merge_statistics(*stats)` · `save_statistics(stats, path)` · `load_statistics(path)`
 

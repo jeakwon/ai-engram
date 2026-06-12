@@ -64,10 +64,27 @@ input, so the mask reaches the experts automatically — no configuration.
     `MaskedLinearHandler` (`editor.registry[nn.Linear] = MaskedLinearHandler()`)
     still works but is `nn.Linear`-only — prefer `mask_fn`.
 
-### Selective layers
+### Selective layers (LoRA convention)
 
-Pass `target_layers=[...]` (a list of module names) to restrict collection — e.g.
-edit only decoder MLP `down_proj` layers.
+Pass `target_modules` to restrict collection, using the **same convention as
+LoRA/PEFT**:
+
+- **list** → match by module-name suffix: `target_modules=["down_proj", "q_proj"]`
+  hits those projections in *every* layer.
+- **string** → regex over the full module path:
+  `target_modules=r".*layers\.5\..*down_proj"` (a single layer).
+- **`None`** (default) → every supported layer ("all-linear").
+
+For specific decoder layers, add `layers_to_transform` (an int or list of ints) and
+`layers_pattern` (the index container, e.g. `"layers"` / `"h"`), exactly as in PEFT;
+it combines with `target_modules` as an AND filter:
+
+```python
+editor.collect_statistics(loader, target_modules=["down_proj"],
+                          layers_to_transform=[20, 21, 22], layers_pattern="layers")
+```
+
+`target_layers=` is kept as a deprecated alias (exact module names still match).
 
 ## 2 — Computing the engram
 
@@ -139,5 +156,5 @@ Custom layers: implement `LayerHandler` (`get_input_dim`, `reshape_input`,
 | CPU covariance storage | `storage_device` | keeps large `D×D` off the GPU |
 | `float64` accumulation | `precision` | stable `pinv`, cast back to model dtype |
 | `inference_mode` / `no_grad` | both stages | no autograd overhead |
-| selective `target_layers` | collection | edit only what you need |
-| answer-token masking | `MaskedLinearHandler` | covariance over relevant tokens only |
+| selective `target_modules` | collection | edit only what you need (LoRA convention) |
+| answer-token masking | `mask_fn` | covariance over relevant tokens only (any layer, incl. MoE) |
