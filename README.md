@@ -52,18 +52,15 @@ weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_c
 ### HuggingFace LLM (answer-token masked)
 
 ```python
-from engram import EngramEditor, EditorConfig, MaskedLinearHandler
+from engram import EngramEditor, EditorConfig
 
 editor = EngramEditor(model, EditorConfig(precision=torch.float32))
-masked = MaskedLinearHandler()
-editor.registry[torch.nn.Linear] = masked          # covariance over answer tokens only
 
-def batch_fn(b):
-    masked.current_mask = b["labels"] != -100
-    return {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+mask_fn  = lambda b: b["labels"] != -100           # covariance over answer tokens only
 
-g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn)
-g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
+g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
+g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
 weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)
 
 # apply — Milestone 2 will expose this as editor.edit(...)

@@ -78,6 +78,7 @@ class EngramEditor:
         dataloader: Iterable[Any],
         target_layers: Optional[List[str]] = None,
         batch_fn: Optional[Callable[[Any], Any]] = None,
+        mask_fn: Optional[Callable[[Any], torch.Tensor]] = None,
     ) -> Stats:
         """Accumulate input covariance ``sum(x^T x)`` for each supported layer.
 
@@ -88,6 +89,10 @@ class EngramEditor:
                 positional args, or a dict of keyword args). Defaults to
                 ``batch[0]`` (vision-style loaders). For HF models pass e.g.
                 ``lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}``.
+            mask_fn: optional ``batch -> bool tensor`` selecting which tokens enter
+                the covariance (one entry per flattened token, e.g.
+                ``lambda b: b["labels"] != -100`` for answer-token-only LLM editing).
+                Applied to every layer type (``nn.Linear``, ``Conv1D``, …).
 
         Returns:
             ``{layer_name: covariance[D, D]}`` on ``config.storage_device``.
@@ -101,6 +106,8 @@ class EngramEditor:
             for batch in tqdm(
                 dataloader, disable=not self.config.verbose, desc="Collecting covariance"
             ):
+                if mask_fn is not None:
+                    collector.current_mask = mask_fn(batch)
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
                 self._forward(self._move_to_device(raw_inputs))
 

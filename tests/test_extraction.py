@@ -204,3 +204,53 @@ def test_absorb_bias_off_is_weight_only():
     W = model[0].weight.detach().to(torch.float64)
     assert biases == {}
     assert torch.allclose(weights["0"], W, atol=1e-6, rtol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# T7: collector-level mask_fn restricts covariance to selected tokens, for any
+# layer type — including GPT-2 Conv1D (which MaskedLinearHandler cannot handle).
+# --------------------------------------------------------------------------- #
+def test_mask_fn_generic_linear_and_conv1d():
+    # (a) nn.Linear — mask_fn keeps exactly the masked token rows
+    torch.manual_seed(0)
+    lin = nn.Sequential(nn.Linear(4, 3, bias=False)).eval()
+    editor = EngramEditor(lin, cpu_cfg())
+    X = torch.randn(2, 5, 4)  # [batch, seq, dim]
+    labels = torch.full((2, 5), -100)
+    labels.view(-1)[[0, 3, 7]] = 1  # 3 answer tokens
+    cov = editor.collect_statistics(
+        [(X, labels)], batch_fn=lambda b: b[0], mask_fn=lambda b: b[1] != -100
+    )
+    sel = X.reshape(-1, 4)[labels.reshape(-1) != -100].double()
+    assert cov["0"].shape == (4, 4)
+    assert torch.allclose(cov["0"], sel.mT @ sel, atol=1e-8)
+
+    # (b) GPT-2 Conv1D — the same mask_fn works (MaskedLinearHandler would crash)
+    pytest.importorskip("transformers")
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    torch.manual_seed(0)
+    gpt = GPT2LMHeadModel(
+        GPT2Config(n_layer=1, n_head=2, n_embd=16, n_positions=16, vocab_size=40)
+    ).eval()
+    ed = EngramEditor(gpt, cpu_cfg(absorb_bias=False))
+    ids = torch.randint(0, 40, (2, 6))
+    lab = torch.full((2, 6), -100)
+    lab.view(-1)[[1, 4, 9, 10]] = 1  # 4 answer tokens
+    batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": lab}
+    feats = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+
+    # capture the Conv1D layer's input to build the expected masked covariance
+    cattn = "transformer.h.0.attn.c_attn"
+    cap = {}
+    handle = dict(gpt.named_modules())[cattn].register_forward_pre_hook(
+        lambda m, inp: cap.__setitem__("x", inp[0].detach().reshape(-1, 16).double())
+    )
+    with torch.inference_mode():
+        gpt(**feats(batch))
+    handle.remove()
+    sel2 = cap["x"][lab.reshape(-1) != -100]
+
+    cov2 = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
+    assert cov2[cattn].shape == (16, 16)
+    assert torch.allclose(cov2[cattn], sel2.mT @ sel2, atol=1e-6)

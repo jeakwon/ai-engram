@@ -43,19 +43,24 @@ cov[name] += x.mT @ x      # D×D, on config.storage_device
 ### Answer-token masking (LLMs)
 
 For unlearning you usually want covariance over *answer* tokens only, not the
-prompt. Swap in `MaskedLinearHandler` and set its mask each batch:
+prompt. Pass a `mask_fn` — a `batch -> bool tensor`, one entry per token:
 
 ```python
-masked = MaskedLinearHandler()
-editor.registry[torch.nn.Linear] = masked
-
-def batch_fn(batch):
-    masked.current_mask = batch["labels"] != -100   # one bool per token
-    return {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
+editor.collect_statistics(
+    loader,
+    batch_fn=lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]},
+    mask_fn=lambda b: b["labels"] != -100,          # answer tokens only
+)
 ```
 
-The mask is applied **before** the bias-absorption constant is appended, so the
-bias term's count equals the number of selected tokens.
+`mask_fn` is applied at the collector, so it works for **every** layer type —
+`nn.Linear`, GPT-2 `Conv1D`, and any custom handler. It drops the non-selected
+token rows before accumulation (and before the bias-absorption constant, so the
+bias term's count equals the number of selected tokens).
+
+!!! note "Legacy"
+    `MaskedLinearHandler` (`editor.registry[nn.Linear] = MaskedLinearHandler()`)
+    still works but is `nn.Linear`-only — prefer `mask_fn`.
 
 ### Selective layers
 

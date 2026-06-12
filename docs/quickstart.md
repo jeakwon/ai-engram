@@ -30,7 +30,7 @@ By default `collect_statistics` reads `batch[0]` from the loader (vision-style
 ```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from engram import EngramEditor, EditorConfig, MaskedLinearHandler
+from engram import EngramEditor, EditorConfig
 
 tok = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16).eval()
@@ -38,15 +38,11 @@ model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat1
 editor = EngramEditor(model, EditorConfig(precision=torch.float32))
 
 # accumulate covariance over answer tokens only (labels != -100)
-masked = MaskedLinearHandler()
-editor.registry[torch.nn.Linear] = masked
+batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+mask_fn  = lambda b: b["labels"] != -100
 
-def batch_fn(batch):
-    masked.current_mask = batch["labels"] != -100
-    return {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
-
-target_cov = editor.collect_statistics(forget_loader, batch_fn=batch_fn)
-total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
+target_cov = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
+total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
 weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
 ```
 
