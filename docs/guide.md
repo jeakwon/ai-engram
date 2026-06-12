@@ -35,8 +35,8 @@ cov[name] += x.mT @ x      # D×D, on config.storage_device
 - **Streaming.** Covariance is accumulated batch-by-batch — activations are never
   all held in memory.
 - **CPU/GPU split.** Matrices live on `config.storage_device` (CPU by default) so
-  wide layers don't pin large `D×D` tensors in VRAM. Compute happens on
-  `config.device`.
+  wide layers don't pin large `D×D` tensors in VRAM. Compute happens on the
+  model's own device.
 - **Precision.** Accumulated in `config.precision` (`float64` default) for
   numerical stability; use `float32` for large LLMs to halve memory.
 

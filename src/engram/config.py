@@ -12,7 +12,6 @@ class EditorConfig:
     """Configuration for engram extraction.
 
     Attributes:
-        device: Device for the closed-form solve (matmul + pseudo-inverse).
         storage_device: Device for accumulating/holding covariance matrices.
             Defaults to CPU so wide layers do not pin large matrices in VRAM.
         precision: Numerical precision for covariance accumulation and the
@@ -24,13 +23,8 @@ class EditorConfig:
             weight with the bias column, so the engram also corrects ``b``.
             Bias-free layers (e.g. Llama/Mistral projections) are unaffected.
             Set ``False`` to edit ``W`` only (the original behavior).
-        verbose: Whether to show progress bars.
     """
 
-    device: torch.device = field(
-        default_factory=lambda: torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    )
     storage_device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     precision: torch.dtype = torch.float64
     absorb_bias: bool = True
-    verbose: bool = True

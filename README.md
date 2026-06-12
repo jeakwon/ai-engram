@@ -90,11 +90,9 @@ Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU
 
 | field | default | purpose |
 |---|---|---|
-| `device` | cuda if available | device for the matmul + pseudo-inverse |
-| `storage_device` | `cpu` | where covariance matrices are held |
+| `storage_device` | `cpu` | where covariance matrices are held (CPU keeps wide `D×D` off VRAM) |
 | `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
 | `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
-| `verbose` | `True` | progress bars |
 
 ## Validation
 
