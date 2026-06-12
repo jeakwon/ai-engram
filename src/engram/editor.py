@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -75,7 +75,7 @@ class EngramEditor:
 
     def collect_statistics(
         self,
-        dataloader,
+        dataloader: Iterable[Any],
         target_layers: Optional[List[str]] = None,
         batch_fn: Optional[Callable[[Any], Any]] = None,
     ) -> Stats:

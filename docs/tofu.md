@@ -5,7 +5,8 @@ is finetuned to memorize synthetic author biographies, then asked to *forget* a
 subset ("forget10" = 10%) while preserving the rest ("retain").
 
 `ai-engram` reproduces this with **answer-token-masked covariance** and the
-closed-form engram, exactly as in [`examples/llm_tofu.ipynb`](../examples/llm_tofu.ipynb).
+closed-form engram, exactly as in
+[`examples/llm_tofu.ipynb`](https://github.com/jeakwon/ai-engram/blob/main/examples/llm_tofu.ipynb).
 Two tests cover it (both gated and GPU-only):
 
 | test | gate | measures |

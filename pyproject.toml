@@ -24,6 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["transformers"]
 dev = ["pytest", "transformers"]
+docs = ["mkdocs-material", "mkdocstrings[python]", "black"]
 
 [project.urls]
 Homepage = "https://github.com/jeakwon/ai-engram"
