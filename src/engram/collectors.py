@@ -6,6 +6,11 @@ accumulation, with matrices held on ``config.storage_device``.
 
 When ``config.absorb_bias`` is set, layers that have a bias accumulate the
 augmented ``(in+1) x (in+1)`` covariance over ``[x ; 1]``.
+
+A per-batch token mask (``current_mask``, set by
+``EngramEditor.collect_statistics(..., mask_fn=...)``) restricts the covariance
+to selected tokens for **every** layer type — e.g. answer-token-only editing of
+LLMs via ``labels != -100``.
 """
 
 from __future__ import annotations
@@ -23,8 +28,9 @@ class CovarianceCollector:
     """Context manager accumulating per-layer input covariance ``sum(x^T x)``.
 
     On ``__enter__`` it allocates a ``D x D`` matrix per matched layer and
-    registers a ``forward_pre_hook`` that flattens the layer input to ``[N, D]``
-    and adds ``x^T x`` in place. On ``__exit__`` all hooks are removed.
+    registers a ``forward_pre_hook`` that flattens the layer input to ``[N, D]``,
+    optionally drops rows not selected by ``current_mask``, and adds ``x^T x`` in
+    place. On ``__exit__`` all hooks are removed.
     """
 
     def __init__(
@@ -39,6 +45,9 @@ class CovarianceCollector:
         self.registry = registry
         self.target_layers = target_layers
         self.covariance_matrices: Dict[str, torch.Tensor] = {}
+        # Set per batch (one bool entry per flattened token) to mask the covariance
+        # for every layer; ``None`` means use all tokens.
+        self.current_mask: Optional[torch.Tensor] = None
         self._hook_handles: List[Any] = []
 
     def __enter__(self) -> "CovarianceCollector":
@@ -63,6 +72,15 @@ class CovarianceCollector:
                     x = layer_handler.reshape_input(mod, inputs, absorb_bias=absorb_bias).to(
                         self.config.precision
                     )
+                    if self.current_mask is not None:
+                        m = self.current_mask.reshape(-1).to(x.device)
+                        if m.shape[0] != x.shape[0]:
+                            raise ValueError(
+                                f"mask has {m.shape[0]} entries but layer '{layer_name}' received "
+                                f"{x.shape[0]} rows — mask_fn must return one entry per flattened "
+                                f"token (batch*seq)."
+                            )
+                        x = x[m]
                     cov_chunk = x.mT @ x
                     self.covariance_matrices[layer_name].add_(
                         cov_chunk.to(self.config.storage_device)
