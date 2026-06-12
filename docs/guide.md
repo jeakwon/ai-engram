@@ -1,0 +1,136 @@
+# Guide
+
+## The method
+
+For a layer computing `y = W x` (`W` of shape `[out, in]`), `ai-engram` localizes
+the part of `W` that responds to a *target* input distribution and isolates it as
+the **engram weight**:
+
+```
+W_engram = W · Σ_target · pinv(Σ_total)
+```
+
+where `Σ = Σ_i xᵢ xᵢᵀ` is the (uncentered) input covariance — `Σ_target` over the
+data you want to forget, `Σ_total` over the full/reference set.
+
+Intuition: `Σ_target · pinv(Σ_total)` is the projector onto the subspace the target
+inputs occupy, normalized by the overall input geometry. `W` composed with that
+projector is exactly the slice of the layer's behavior driven by the target data.
+Subtracting `α·W_engram` removes that slice and leaves the rest intact.
+
+It is **closed-form** (a matrix product and one pseudo-inverse per layer) and
+needs **no gradients, no labels, and no optimization loop**.
+
+## 1 — Collecting covariance
+
+`collect_statistics` registers a `forward_pre_hook` on every supported layer,
+flattens the layer input to `[N, D]`, and accumulates `xᵀx` in place:
+
+```python
+cov[name] += x.mT @ x      # D×D, on config.storage_device
+```
+
+- **Forward-only.** No backward pass is ever run; collection happens under
+  `torch.inference_mode()`.
+- **Streaming.** Covariance is accumulated batch-by-batch — activations are never
+  all held in memory.
+- **CPU/GPU split.** Matrices live on `config.storage_device` (CPU by default) so
+  wide layers don't pin large `D×D` tensors in VRAM. Compute happens on
+  `config.device`.
+- **Precision.** Accumulated in `config.precision` (`float64` default) for
+  numerical stability; use `float32` for large LLMs to halve memory.
+
+### Answer-token masking (LLMs)
+
+For unlearning you usually want covariance over *answer* tokens only, not the
+prompt. Swap in `MaskedLinearHandler` and set its mask each batch:
+
+```python
+masked = MaskedLinearHandler()
+editor.registry[torch.nn.Linear] = masked
+
+def batch_fn(batch):
+    masked.current_mask = batch["labels"] != -100   # one bool per token
+    return {"input_ids": batch["input_ids"], "attention_mask": batch["attention_mask"]}
+```
+
+The mask is applied **before** the bias-absorption constant is appended, so the
+bias term's count equals the number of selected tokens.
+
+### Selective layers
+
+Pass `target_layers=[...]` (a list of module names) to restrict collection — e.g.
+edit only decoder MLP `down_proj` layers.
+
+## 2 — Computing the engram
+
+`compute_engram_weights(target_cov, total_cov)` returns
+`(weight_engrams, bias_engrams)`. Per layer:
+
+```python
+W      = handler.weight_matrix(module)        # canonical [out, in]
+engram = W @ Σ_target @ pinv(Σ_total + λI)    # λ = damping_factor
+```
+
+- **Damping.** `damping_factor > 0` adds `λI` before the pseudo-inverse (Tikhonov
+  regularization) for ill-conditioned `Σ_total`. `0.0` relies on `pinv`'s own SVD
+  thresholding.
+- The result is returned in `module.weight`'s shape, so applying the edit is a
+  direct subtraction.
+- A list of target dicts is summed first (`merge_statistics`), so you can pass
+  per-class covariances.
+
+## Bias absorption
+
+A layer with a bias is affine: `y = Wx + b`. In homogeneous coordinates this is
+exactly linear:
+
+```
+x̃ = [x ; 1]            (dim in+1)
+W̃ = [W | b]            ([out, in+1])      ⇒   y = W̃ x̃
+Σ̃ = Σ x̃ x̃ᵀ            ((in+1)×(in+1), captures the input mean and count)
+W̃_engram = W̃ · Σ̃_target · pinv(Σ̃_total)        → split into  W_engram, b_engram
+```
+
+With `absorb_bias=True` (default, **automatic**), bias-bearing layers are handled
+this way; the covariance for those layers is `(in+1)×(in+1)` and
+`compute_engram_weights` returns a matching `bias_engrams[name]`. Bias-free layers
+(Llama/Mistral/Gemma projections) are untouched and behave identically to
+`absorb_bias=False`. Set `absorb_bias=False` to edit `W` only.
+
+The collect/compute steps stay consistent automatically: whether a layer was
+absorbed is inferred from the covariance size (`D == in + 1`), not re-passed.
+
+## Layer coverage
+
+| layer | handler | notes |
+|---|---|---|
+| `nn.Linear` | `LinearHandler` | weight stored `[out, in]` |
+| HF `Conv1D` | `Conv1DHandler` | GPT-2 family; weight stored `[in, out]`, transposed internally and back |
+| masked linear | `MaskedLinearHandler` | covariance over selected tokens |
+
+`Conv1D` is registered automatically when `transformers` is importable. Modern
+decoder LLMs use `nn.Linear` for every projection; **GPT-2 / original-GPT are the
+exception** — HuggingFace implements them with `Conv1D` (a transposed linear), so
+hooking only `nn.Linear` would miss them.
+
+Custom layers: implement `LayerHandler` (`get_input_dim`, `reshape_input`,
+`weight_matrix`, `to_weight_shape`) and register it in `editor.registry`.
+
+## Not yet supported
+
+- **Quantized weights** (4/8-bit, GPTQ, AWQ) — the closed form needs a real float
+  weight matrix; load in fp16/bf16/fp32.
+- **`Conv2d` / vision models** — planned.
+
+## Efficiency summary
+
+| technique | where | benefit |
+|---|---|---|
+| forward pre-hooks | `CovarianceCollector` | no backward pass |
+| closed-form solve | `compute_engram_weights` | one `pinv` per layer, no training loop |
+| CPU covariance storage | `storage_device` | keeps large `D×D` off the GPU |
+| `float64` accumulation | `precision` | stable `pinv`, cast back to model dtype |
+| `inference_mode` / `no_grad` | both stages | no autograd overhead |
+| selective `target_layers` | collection | edit only what you need |
+| answer-token masking | `MaskedLinearHandler` | covariance over relevant tokens only |
