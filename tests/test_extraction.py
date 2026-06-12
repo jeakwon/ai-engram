@@ -254,3 +254,57 @@ def test_mask_fn_generic_linear_and_conv1d():
     cov2 = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
     assert cov2[cattn].shape == (16, 16)
     assert torch.allclose(cov2[cattn], sel2.mT @ sel2, atol=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# T8: MoE masking — routed expert layers recover their answer-token mask by
+# matching rows back to the router input (no routing knowledge needed).
+# --------------------------------------------------------------------------- #
+def test_mask_fn_moe_mixtral():
+    pytest.importorskip("transformers")
+    from transformers import MixtralConfig, MixtralForCausalLM
+
+    torch.manual_seed(0)
+    m = MixtralForCausalLM(
+        MixtralConfig(
+            vocab_size=64, hidden_size=32, num_hidden_layers=1, num_attention_heads=2,
+            num_key_value_heads=2, intermediate_size=64, max_position_embeddings=32,
+            num_local_experts=4, num_experts_per_tok=2,
+        )
+    ).eval()
+    ed = EngramEditor(m, cpu_cfg(absorb_bias=False))
+    ids = torch.randint(0, 64, (2, 8))
+    lab = torch.full((2, 8), -100)
+    lab.view(-1)[[1, 4, 9, 12]] = 1
+    batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": lab}
+    feats = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+
+    # masking used to crash on the routed expert layers — now it runs
+    cov = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
+    we, _ = ed.compute_engram_weights(cov, cov)
+    expert_w1 = [n for n in cov if n.endswith(".w1")]
+    assert expert_w1, "no MoE expert layers were hooked"
+    mods = dict(m.named_modules())
+    for n in we:
+        assert we[n].shape == mods[n].weight.shape, n
+
+    # correctness: brute-force align one expert's w1 against the router input
+    w1 = expert_w1[0]
+    gate = w1.rsplit(".experts.", 1)[0] + ".gate"
+    cap = {}
+    hg = mods[gate].register_forward_pre_hook(
+        lambda mod, inp: cap.__setitem__("g", inp[0].detach().reshape(-1, 32).double())
+    )
+    he = mods[w1].register_forward_pre_hook(
+        lambda mod, inp: cap.__setitem__("e", inp[0].detach().reshape(-1, 32).double())
+    )
+    with torch.inference_mode():
+        m(**feats(batch))
+    hg.remove()
+    he.remove()
+
+    match = (cap["g"][None, :, :] == cap["e"][:, None, :]).all(-1)  # exact row match
+    assert (match.sum(1) == 1).all()
+    idx = match.float().argmax(1)
+    sel = cap["e"][(lab.reshape(-1) != -100)[idx]]
+    assert torch.allclose(cov[w1], sel.mT @ sel, atol=1e-5)

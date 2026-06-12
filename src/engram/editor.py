@@ -107,7 +107,7 @@ class EngramEditor:
                 dataloader, disable=not self.config.verbose, desc="Collecting covariance"
             ):
                 if mask_fn is not None:
-                    collector.current_mask = mask_fn(batch)
+                    collector.set_mask(mask_fn(batch))
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
                 self._forward(self._move_to_device(raw_inputs))
 
