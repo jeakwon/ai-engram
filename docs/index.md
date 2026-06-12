@@ -14,6 +14,30 @@ W_engram = W · Σ_target · pinv(Σ_total)
 Subtracting it (`W ← W − α·W_engram`) removes the target knowledge while
 preserving the rest — the basis of fast, training-free unlearning / model editing.
 
+## Install
+
+```bash
+pip install ai-engram
+```
+
+Installs `torch`, `tqdm`, and `transformers` — HuggingFace LLMs and GPT-2
+(`Conv1D`) work out of the box. Import name: `engram`.
+
+## Quickstart
+
+```python
+from engram import EngramEditor, EditorConfig
+
+editor = EngramEditor(model, EditorConfig())
+
+target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
+total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
+
+weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
+```
+
+See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token masking.
+
 ## Why
 
 - **Closed-form.** One pseudo-inverse per layer. No optimization loop, no labels.
@@ -31,20 +55,3 @@ preserving the rest — the basis of fast, training-free unlearning / model edit
 - [Guide](guide.md) — the method, configuration, efficiency, and design in depth
 - [API reference](api.md)
 - [TOFU validation](tofu.md) — reproducing unlearning results
-
-## Scope
-
-**Milestone 1 (current):** statistics collection + engram-weight *extraction*.
-Applying the edit, a one-call `edit_llm` helper, adaptive scaling, registries,
-and eval metrics come in later milestones. Extraction already reproduces TOFU
-unlearning — see [TOFU validation](tofu.md).
-
-## Install
-
-```bash
-pip install ai-engram
-```
-
-```python
-from engram import EngramEditor, EditorConfig
-```
