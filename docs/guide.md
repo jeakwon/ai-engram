@@ -93,12 +93,11 @@ editor.collect_statistics(loader, target_modules=["down_proj"],
 
 ```python
 W      = handler.weight_matrix(module)        # canonical [out, in]
-engram = W @ Σ_target @ pinv(Σ_total + λI)    # λ = damping_factor
+engram = W @ Σ_target @ pinv(Σ_total)         # closed form, one pinv per layer
 ```
 
-- **Damping.** `damping_factor > 0` adds `λI` before the pseudo-inverse (Tikhonov
-  regularization) for ill-conditioned `Σ_total`. `0.0` relies on `pinv`'s own SVD
-  thresholding.
+- **Pseudo-inverse.** `torch.linalg.pinv` (SVD with rcond thresholding) handles
+  rank-deficient `Σ_total` directly — small singular values are cut, not inverted.
 - The result is returned in `module.weight`'s shape, so applying the edit is a
   direct subtraction.
 - A list of target dicts is summed first (`merge_statistics`), so you can pass

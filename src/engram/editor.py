@@ -213,11 +213,6 @@ class EngramEditor:
 
             weight = handler.weight_matrix(module, absorb_bias=absorbed).to(dev, dtype=prec)
 
-            if self.config.damping_factor > 0:
-                sum_cov = sum_cov + self.config.damping_factor * torch.eye(
-                    sum_cov.shape[0], device=dev, dtype=prec
-                )
-
             engram = weight @ pos_cov @ torch.linalg.pinv(sum_cov)  # [out, D]
 
             if absorbed:

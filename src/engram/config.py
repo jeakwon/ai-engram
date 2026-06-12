@@ -18,8 +18,6 @@ class EditorConfig:
         precision: Numerical precision for covariance accumulation and the
             closed-form solve. ``float64`` is recommended for stability;
             use ``float32`` for large LLMs to halve covariance memory.
-        damping_factor: Tikhonov regularization for the pseudo-inverse
-            (``Sigma_total + lambda*I``). ``0.0`` disables it.
         absorb_bias: When ``True`` (default, *automatic*), layers that have a
             bias are treated as the affine map ``y = Wx + b`` via homogeneous
             coordinates: the input is augmented with a constant ``1`` and the
@@ -34,6 +32,5 @@ class EditorConfig:
     )
     storage_device: torch.device = field(default_factory=lambda: torch.device("cpu"))
     precision: torch.dtype = torch.float64
-    damping_factor: float = 0.0
     absorb_bias: bool = True
     verbose: bool = True
