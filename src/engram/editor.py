@@ -9,6 +9,7 @@ per layer (with optional bias absorption). Applying the edit
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -76,15 +77,29 @@ class EngramEditor:
     def collect_statistics(
         self,
         dataloader: Iterable[Any],
-        target_layers: Optional[List[str]] = None,
+        target_modules: Optional[Union[str, List[str]]] = None,
         batch_fn: Optional[Callable[[Any], Any]] = None,
         mask_fn: Optional[Callable[[Any], torch.Tensor]] = None,
+        layers_to_transform: Optional[Union[int, List[int]]] = None,
+        layers_pattern: Optional[Union[str, List[str]]] = None,
+        target_layers: Optional[List[str]] = None,
     ) -> Stats:
         """Accumulate input covariance ``sum(x^T x)`` for each supported layer.
 
         Args:
             dataloader: iterable of batches.
-            target_layers: optional list of module names to restrict to.
+            target_modules: which modules to collect, **LoRA/PEFT convention**. A
+                list matches by name suffix (``["down_proj", "q_proj"]`` hits every
+                layer's ``down_proj``/``q_proj``); a string is a regex matched
+                against the full module path (``r".*layers\\.5\\..*down_proj"``).
+                ``None`` (default) collects every supported layer ("all-linear").
+            layers_to_transform: restrict to these decoder-layer indices (an int or
+                list of ints), like PEFT. Combined with ``target_modules`` as an AND
+                filter; ``None`` (default) applies no index restriction.
+            layers_pattern: container name(s) holding the layer index
+                (``"layers"``, ``"h"``, …). ``None`` scans common patterns.
+            target_layers: **deprecated** alias of ``target_modules`` (exact module
+                names still match, as they did before).
             batch_fn: maps a batch to model inputs (a tensor, a tuple of
                 positional args, or a dict of keyword args). Defaults to
                 ``batch[0]`` (vision-style loaders). For HF models pass e.g.
@@ -99,7 +114,23 @@ class EngramEditor:
             ``D`` is the layer's input dim, or ``input dim + 1`` when bias
             absorption applies (``config.absorb_bias`` and the layer has a bias).
         """
-        collector = CovarianceCollector(self.model, self.config, self.registry, target_layers)
+        if target_layers is not None:
+            if target_modules is None:
+                target_modules = target_layers
+            warnings.warn(
+                "target_layers is deprecated; use target_modules "
+                "(LoRA-style: list = name suffix, str = regex).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        collector = CovarianceCollector(
+            self.model,
+            self.config,
+            self.registry,
+            target_modules=target_modules,
+            layers_to_transform=layers_to_transform,
+            layers_pattern=layers_pattern,
+        )
         self.model.eval()
 
         with collector, torch.inference_mode():

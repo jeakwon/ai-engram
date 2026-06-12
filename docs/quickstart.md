@@ -68,10 +68,25 @@ removal, smaller values are gentler.
 
 ## Editing only some layers
 
+Pass `target_modules` — the **same convention as LoRA/PEFT**. A *list* matches by
+module-name suffix (across every layer); a *string* is a regex over the full
+module path:
+
 ```python
-target_layers = [n for n, m in model.named_modules() if n.endswith("mlp.down_proj")]
-target_cov = editor.collect_statistics(forget_loader, target_layers=target_layers, batch_fn=batch_fn)
-total_cov  = editor.collect_statistics(total_loader,  target_layers=target_layers, batch_fn=batch_fn)
+# every layer's MLP down_proj
+target_cov = editor.collect_statistics(forget_loader, target_modules=["down_proj"], batch_fn=batch_fn)
+total_cov  = editor.collect_statistics(total_loader,  target_modules=["down_proj"], batch_fn=batch_fn)
+```
+
+To restrict to specific **decoder layers**, use `layers_to_transform`
+(+ `layers_pattern`), exactly like PEFT — or fold the index into a regex string:
+
+```python
+# layers 20-22 only
+editor.collect_statistics(loader, target_modules=["down_proj"],
+                          layers_to_transform=[20, 21, 22], layers_pattern="layers")
+# equivalent single-layer selection via regex
+editor.collect_statistics(loader, target_modules=r".*layers\.5\..*down_proj")
 ```
 
 ## Reusing statistics

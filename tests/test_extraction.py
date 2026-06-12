@@ -308,3 +308,89 @@ def test_mask_fn_moe_mixtral():
     idx = match.float().argmax(1)
     sel = cap["e"][(lab.reshape(-1) != -100)[idx]]
     assert torch.allclose(cov[w1], sel.mT @ sel, atol=1e-5)
+
+
+# A tiny decoder-style stack: module names are layers.{i}.{down,up}_proj, so the
+# index-based selection below has a realistic ".layers.<idx>." path to parse.
+class _TinyStack(nn.Module):
+    def __init__(self, n: int = 3, d: int = 4):
+        super().__init__()
+        self.layers = nn.ModuleList(
+            nn.ModuleDict(
+                {"down_proj": nn.Linear(d, d, bias=False), "up_proj": nn.Linear(d, d, bias=False)}
+            )
+            for _ in range(n)
+        )
+
+    def forward(self, x):
+        for blk in self.layers:
+            x = blk["up_proj"](blk["down_proj"](x))
+        return x
+
+
+def _stack_loader(d: int = 4):
+    return DataLoader(TensorDataset(torch.randn(64, d)), batch_size=16)
+
+
+# --------------------------------------------------------------------------- #
+# T9: target_modules LoRA convention — a list matches by dotted name suffix
+# (across every layer); a string is a regex over the full module path.
+# --------------------------------------------------------------------------- #
+def test_target_modules_suffix_and_regex():
+    torch.manual_seed(0)
+    model = _TinyStack(n=3).eval()
+
+    cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+        _stack_loader(), target_modules=["down_proj"]
+    )
+    assert set(cov) == {"layers.0.down_proj", "layers.1.down_proj", "layers.2.down_proj"}
+
+    cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+        _stack_loader(), target_modules=r".*layers\.1\..*"
+    )
+    assert set(cov) == {"layers.1.down_proj", "layers.1.up_proj"}
+
+
+# --------------------------------------------------------------------------- #
+# T10: layers_to_transform / layers_pattern select by decoder-layer index, and
+# combine with target_modules as an AND filter (PEFT convention).
+# --------------------------------------------------------------------------- #
+def test_layers_to_transform_selects_by_index():
+    torch.manual_seed(0)
+    model = _TinyStack(n=3).eval()
+
+    cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+        _stack_loader(), target_modules=["down_proj"], layers_to_transform=[0, 2], layers_pattern="layers"
+    )
+    assert set(cov) == {"layers.0.down_proj", "layers.2.down_proj"}
+
+    # int form + target_modules=None -> every linear in just that one layer
+    cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+        _stack_loader(), layers_to_transform=1, layers_pattern="layers"
+    )
+    assert set(cov) == {"layers.1.down_proj", "layers.1.up_proj"}
+
+    # layers_pattern=None auto-detects common containers ("layers", "h", ...)
+    cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+        _stack_loader(), target_modules=["down_proj"], layers_to_transform=[0]
+    )
+    assert set(cov) == {"layers.0.down_proj"}
+
+
+# --------------------------------------------------------------------------- #
+# T11: target_layers still works as a deprecated alias — exact module names match
+# exactly as before, and a DeprecationWarning is emitted.
+# --------------------------------------------------------------------------- #
+def test_target_layers_deprecated_alias():
+    import warnings
+
+    torch.manual_seed(0)
+    model = _TinyStack(n=2).eval()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cov = EngramEditor(model, cpu_cfg()).collect_statistics(
+            _stack_loader(), target_layers=["layers.1.up_proj"]
+        )
+    assert set(cov) == {"layers.1.up_proj"}
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
