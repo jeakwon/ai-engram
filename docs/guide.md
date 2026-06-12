@@ -117,11 +117,11 @@ hooking only `nn.Linear` would miss them.
 Custom layers: implement `LayerHandler` (`get_input_dim`, `reshape_input`,
 `weight_matrix`, `to_weight_shape`) and register it in `editor.registry`.
 
-## Not yet supported
+!!! warning "Not yet supported"
 
-- **Quantized weights** (4/8-bit, GPTQ, AWQ) — the closed form needs a real float
-  weight matrix; load in fp16/bf16/fp32.
-- **`Conv2d` / vision models** — planned.
+    - **Quantized weights** (4/8-bit, GPTQ, AWQ) — the closed form needs a real
+      float weight matrix; load in fp16/bf16/fp32.
+    - **`Conv2d` / vision models** — planned.
 
 ## Efficiency summary
 

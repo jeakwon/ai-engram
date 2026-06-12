@@ -50,9 +50,11 @@ total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn)
 weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
 ```
 
-## Applying the edit (Milestone 2 preview)
+## Applying the edit
 
-`ai-engram` M1 stops at extraction; applying the edit is one subtraction:
+!!! note "Milestone 2 preview"
+    M1 stops at extraction. Applying the edit is the single subtraction below; M2
+    will expose it as `editor.edit(target_cov, total_cov, edit_strength=alpha)`.
 
 ```python
 import copy
@@ -66,8 +68,7 @@ with torch.no_grad():
 ```
 
 `alpha` (the *edit strength*) controls how much is removed; `1.0` is full
-removal, smaller values are gentler. Milestone 2 will expose this as
-`editor.edit(target_cov, total_cov, edit_strength=alpha)`.
+removal, smaller values are gentler.
 
 ## Editing only some layers
 

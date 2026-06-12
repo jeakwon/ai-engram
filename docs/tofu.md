@@ -4,6 +4,11 @@
 is finetuned to memorize synthetic author biographies, then asked to *forget* a
 subset ("forget10" = 10%) while preserving the rest ("retain").
 
+!!! success "Reproduces the paper"
+    `ai-engram`'s engram extraction reproduces the official TOFU **forget10
+    Overall** within ~0.01 — gold **0.998**, plain **0.706**, adaptive **0.817**
+    (paper 0.998 / 0.698 / 0.818).
+
 `ai-engram` reproduces this with **answer-token-masked covariance** and the
 closed-form engram, exactly as in
 [`examples/llm_tofu.ipynb`](https://github.com/jeakwon/ai-engram/blob/main/examples/llm_tofu.ipynb).
