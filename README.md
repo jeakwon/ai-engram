@@ -84,7 +84,7 @@ as LoRA/PEFT (`["down_proj"]` by name suffix, or a regex string), plus
 | 2. compute | `W_engram = W · Σ_target · pinv(Σ_total)` | one pseudo-inverse per layer |
 | 3. apply *(M2)* | `W ← W − α·W_engram` | a single subtraction |
 
-Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), `float64` solve cast back to the model dtype, optional damping, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
+Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), `float64` solve cast back to the model dtype, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
 
 ### Configuration (`EditorConfig`)
 
@@ -93,7 +93,6 @@ Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU
 | `device` | cuda if available | device for the matmul + pseudo-inverse |
 | `storage_device` | `cpu` | where covariance matrices are held |
 | `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
-| `damping_factor` | `0.0` | Tikhonov term `Σ_total + λI` for the pseudo-inverse |
 | `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
 | `verbose` | `True` | progress bars |
 
