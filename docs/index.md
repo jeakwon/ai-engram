@@ -36,13 +36,13 @@ preserving the rest — the basis of fast, training-free unlearning / model edit
 
 **Milestone 1 (current):** statistics collection + engram-weight *extraction*.
 Applying the edit, a one-call `edit_llm` helper, adaptive scaling, registries,
-and eval metrics are on the roadmap (see the README). Extraction already
-reproduces TOFU unlearning — see [TOFU validation](tofu.md).
+and eval metrics come in later milestones. Extraction already reproduces TOFU
+unlearning — see [TOFU validation](tofu.md).
 
 ## Install
 
 ```bash
-pip install "ai-engram[llm]"
+pip install ai-engram
 ```
 
 ```python

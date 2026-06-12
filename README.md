@@ -2,6 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-engram.svg)](https://pypi.org/project/ai-engram/)
+[![Docs](https://img.shields.io/badge/docs-jeakwon.github.io-7c4dff.svg)](https://jeakwon.github.io/ai-engram/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Minimal, efficient **covariance-based engram extraction** for editing neural
@@ -26,17 +27,20 @@ preserving the rest — the basis of fast, training-free unlearning / model edit
 
 > **Milestone 1 (this release):** statistics collection + engram-weight
 > *extraction*. Applying the edit, a one-call `edit_llm` helper, adaptive
-> scaling, model registries, and eval metrics are on the [roadmap](#roadmap).
+> scaling, model registries, and eval metrics come in later milestones.
 > The extraction already reproduces TOFU unlearning — see [Validation](#validation).
 
 ## Install
 
 ```bash
-pip install ai-engram          # core: torch, tqdm
-pip install "ai-engram[llm]"   # + transformers (HF models, GPT-2 Conv1D support)
+pip install ai-engram
 ```
 
-The distribution is `ai-engram`; the **import name is `engram`**.
+Installs `torch`, `tqdm`, and `transformers` — everything needed for HuggingFace
+LLMs (and GPT-2 `Conv1D`) out of the box. The distribution is `ai-engram`; the
+**import name is `engram`**.
+
+📖 **Documentation: <https://jeakwon.github.io/ai-engram/>**
 
 ## Quickstart
 
@@ -63,8 +67,7 @@ takes keyword args, pass a `batch_fn`.
 
 Works out of the box for the mainstream `nn.Linear`-based decoders
 (Llama, Mistral, Qwen, Gemma, Phi, …) **and** the GPT-2 family, which uses
-HuggingFace's `Conv1D` (a transposed linear) — registered automatically when
-`transformers` is installed.
+HuggingFace's `Conv1D` (a transposed linear) — registered automatically.
 
 ```python
 import torch
@@ -129,7 +132,7 @@ selective `target_layers`, and answer-token masking for LLMs.
 | `storage_device` | cpu | where covariance matrices are accumulated/held |
 | `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
 | `damping_factor` | `0.0` | Tikhonov term `Σ_total + λI` for the pseudo-inverse |
-| `absorb_bias` | `True` | absorb bias into the edit when a layer has one (bias-free layers unaffected) |
+| `absorb_bias` | `True` | absorb bias into the edit (affine `y=Wx+b`) when a layer has one; bias-free layers unaffected |
 | `verbose` | `True` | progress bars |
 
 ## Validation
@@ -167,16 +170,10 @@ See [`tests/`](tests/) and [`examples/`](examples/) for runnable end-to-end code
 - `EngramEditor.compute_engram_weights(target_cov, total_cov) -> (weight_engrams, bias_engrams)`
 - `EngramEditor.save_statistics(stats, path)` / `load_statistics(path)`
 
-Full reference: [`docs/api.md`](docs/api.md). Guide: [`docs/guide.md`](docs/guide.md).
-
-## Roadmap
-
-- **M2** — `editor.edit(...)` / `apply_engram_weights(...)` (in-place & copy), the
-  one-call `edit_llm(model, tok, forget, retain, strength)` helper
-- adaptive-norm / Fisher per-layer scaling
-- model & data registries (TOFU / WMDP / MUSE)
-- evaluation metrics (ROUGE, forget/retain, MIA)
-- `Conv2d` support for vision models
+Full documentation — **<https://jeakwon.github.io/ai-engram/>** —
+[API reference](https://jeakwon.github.io/ai-engram/api/) ·
+[Guide](https://jeakwon.github.io/ai-engram/guide/) ·
+[TOFU validation](https://jeakwon.github.io/ai-engram/tofu/).
 
 ## License
 

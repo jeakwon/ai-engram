@@ -1,20 +1,14 @@
 # Installation
 
-## Requirements
-
-- Python ≥ 3.9
-- PyTorch ≥ 2.0
-- `transformers` (optional) — required for HuggingFace models and for GPT-2
-  `Conv1D` support
-
 ## From PyPI
 
 ```bash
-pip install ai-engram          # core: torch, tqdm
-pip install "ai-engram[llm]"   # + transformers
+pip install ai-engram
 ```
 
-The distribution is named **`ai-engram`**; the **import package is `engram`**:
+This installs everything: `torch`, `tqdm`, and `transformers` — so HuggingFace
+LLMs and the GPT-2 `Conv1D` path work out of the box. The distribution is named
+**`ai-engram`**; the **import package is `engram`**:
 
 ```python
 import engram
@@ -22,12 +16,18 @@ from engram import EngramEditor, EditorConfig
 print(engram.__version__)
 ```
 
+## Requirements
+
+- Python ≥ 3.9
+- PyTorch ≥ 2.0
+- `transformers` (installed automatically)
+
 ## From source
 
 ```bash
 git clone https://github.com/jeakwon/ai-engram
 cd ai-engram
-pip install -e ".[dev]"        # editable install + pytest + transformers
+pip install -e ".[dev]"        # editable install + pytest
 ```
 
 The package uses a `src/` layout (`src/engram`) with the
