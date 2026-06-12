@@ -19,11 +19,11 @@ classifiers = [
 dependencies = [
     "torch>=2.0",
     "tqdm",
+    "transformers",
 ]
 
 [project.optional-dependencies]
-llm = ["transformers"]
-dev = ["pytest", "transformers"]
+dev = ["pytest"]
 docs = ["mkdocs-material", "mkdocstrings[python]", "black"]
 
 [project.urls]
