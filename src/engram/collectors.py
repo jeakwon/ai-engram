@@ -31,6 +31,12 @@ from .handlers import LayerHandler, handler_for
 # GPT-2="h", etc.). Mirrors PEFT/LoRA's layer-index selection.
 _COMMON_LAYER_PATTERNS = ("layers", "h", "blocks", "block", "layer")
 
+# Routed-token alignment (masked MoE on the per-expert nn.Linear layout): an expert's
+# input rows are an exact gather of the full-token reference, recovered by a small
+# random-projection fingerprint. A few dims make a collision (two distinct rows agreeing
+# in every dim) effectively impossible — a 1-D fingerprint could alias and mis-map a token.
+_FP_DIM = 4
+
 
 def _module_name_matches(name: str, target_modules: Optional[Union[str, List[str]]]) -> bool:
     """LoRA/PEFT-style module match: None=all, str=regex (fullmatch), list=exact-or-dotted-suffix."""
@@ -91,8 +97,8 @@ class CovarianceCollector:
         self.sample_counts: Dict[str, int] = {}                 # per-layer rows that entered the mean
         self.current_mask: Optional[torch.Tensor] = None
         # per-batch routing-alignment state (used only when a layer sees a subset)
-        self._proj: Dict[int, torch.Tensor] = {}                       # H -> random fingerprint vector
-        self._ref: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}   # H -> (fingerprint[N], mask[N])
+        self._proj: Dict[int, torch.Tensor] = {}                       # H -> random projection [H, _FP_DIM]
+        self._ref: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}   # H -> (fingerprint[N,_FP_DIM], mask[N])
         self._routed_mask: Optional[torch.Tensor] = None
         self._storage_device: Optional[torch.device] = None  # resolved in __enter__
         self._hook_handles: List[Any] = []
@@ -104,14 +110,14 @@ class CovarianceCollector:
         self._routed_mask = None
 
     def _fingerprint(self, x: torch.Tensor) -> torch.Tensor:
-        """A per-row scalar (random projection) used to match routed rows back."""
+        """Per-row signature (random projection to ``_FP_DIM`` dims) to match routed rows back."""
         h = x.shape[1]
         proj = self._proj.get(h)
         if proj is None:
             g = torch.Generator(device=x.device).manual_seed(1234567 + h)  # local RNG, deterministic
-            proj = torch.randn(h, generator=g, device=x.device, dtype=x.dtype)
+            proj = torch.randn(h, _FP_DIM, generator=g, device=x.device, dtype=x.dtype)
             self._proj[h] = proj
-        return x @ proj
+        return x @ proj  # [N, _FP_DIM]
 
     def _select(self, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Return the boolean row-mask selecting wanted tokens for this layer input."""
@@ -129,9 +135,9 @@ class CovarianceCollector:
         ref = self._ref.get(h)
         if ref is not None:  # match rows back to the full-token reference (exact gather)
             fp_ref, mask_full = ref
-            d = (self._fingerprint(x)[:, None] - fp_ref[None, :]).abs()
-            idx = d.argmin(1)
-            if (d.gather(1, idx[:, None]).squeeze(1) > 1e-3 * fp_ref.std().clamp(min=1e-9)).any():
+            dist = torch.cdist(self._fingerprint(x), fp_ref)  # [n, n_full] over _FP_DIM dims
+            idx = dist.argmin(1)
+            if (dist.gather(1, idx[:, None]).squeeze(1) > 1e-3 * fp_ref.std().clamp(min=1e-9)).any():
                 raise ValueError(
                     f"can't align mask: a layer received {n}/{n_full} rows that don't match the "
                     f"full-token reference (not a token gather)."

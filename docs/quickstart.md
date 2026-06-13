@@ -123,3 +123,7 @@ total = editor.load_statistics("total.pt")
 # build a total from per-target pieces (count-weighted merge)
 total = EngramEditor.merge_statistics(stats_a, stats_b, stats_c)
 ```
+
+The engram itself is **not** serialized — save the `Statistics` and recompute. Recomputing
+is one `pinv` per layer (no forward pass), and it keeps the engram tied to the exact weights
+you apply it to (a stored engram would silently go stale against a changed checkpoint).

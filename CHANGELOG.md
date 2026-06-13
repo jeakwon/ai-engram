@@ -23,6 +23,9 @@ default. **Breaking** (pre-1.0): the statistics and engram types changed.
   sample counts, with a count-weighted `merge` and versioned `save`/`load`.
 - **Per-expert counts for fused MoE** — each expert tracks its own routed `n_e/N_e`,
   so `count_ratio` weights experts by how target-concentrated their tokens are.
+- **Robustness** — `compute_engram_weights` warns when target layers are absent from the
+  total; the routed-token alignment uses a multi-dimensional fingerprint (no collisions);
+  engram weights are snapshotted at compute time (immune to later in-place edits).
 
 ### Changed (breaking)
 - **`collect_statistics` returns a `Statistics`** (mean covariance + counts), not a

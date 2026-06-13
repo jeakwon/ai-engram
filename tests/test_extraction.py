@@ -600,3 +600,18 @@ def test_editor_save_load_statistics(tmp_path):
     loaded = ed.load_statistics(p)
     assert set(loaded) == set(cov) and loaded.count == cov.count
     assert torch.allclose(loaded["0"], cov["0"])
+
+
+# T22: compute warns (and skips) when a target layer is absent from the total.
+def test_compute_warns_on_target_layer_absent_from_total():
+    import warnings
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 2, bias=False)).eval()
+    ed = EngramEditor(model, cpu_cfg())
+    cov = ed.collect_statistics(DataLoader(TensorDataset(torch.randn(16, 4)), batch_size=8))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = ed.compute_engram_weights(cov, Statistics({}, {}))  # total covers nothing
+    assert result.layers == {}
+    assert any("absent from total" in str(w.message) for w in caught)

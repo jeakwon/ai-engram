@@ -211,6 +211,15 @@ class EngramEditor:
         if isinstance(target_covariances, list):
             target_covariances = self.merge_statistics(*target_covariances)
 
+        missing = [k for k in target_covariances if k not in total_covariance]
+        if missing:
+            warnings.warn(
+                f"compute_engram_weights: {len(missing)} target layer(s) are absent from "
+                f"total_covariance and were skipped (e.g. {missing[:3]}) — is total a superset "
+                f"of target?",
+                stacklevel=2,
+            )
+
         result = EngramResult()
         modules = dict(self.model.named_modules())
         dev = self._model_device  # float32 throughout — float64's pinv is catastrophic on
@@ -236,7 +245,7 @@ class EngramEditor:
                     continue
                 w = adapter.weight_for(layer_name, self.model)  # [out, in] (a Parameter slice)
                 result.layers[layer_name] = LayerScaleInfo(
-                    name=layer_name, weight=w,
+                    name=layer_name, weight=w.detach().clone(),  # snapshot (norms only)
                     projection=w.to(dev, dtype=prec) @ c_target @ pinv_total,
                     n=n, N=N, total_cov=kept,
                 )
@@ -256,7 +265,7 @@ class EngramEditor:
             else:
                 proj = handler.to_weight_shape(full, module)
             result.layers[layer_name] = LayerScaleInfo(
-                name=layer_name, weight=module.weight.detach(),  # reference (norms only); no f32 copy
+                name=layer_name, weight=module.weight.detach().clone(),  # snapshot: immune to later in-place edits
                 projection=proj, n=n, N=N, total_cov=kept,
             )
 

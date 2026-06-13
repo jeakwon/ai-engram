@@ -92,7 +92,10 @@ be built from *its* tokens. How that is handled depends on the model's MoE layou
 
 - **Per-expert `nn.Linear`** (transformers&nbsp;<5, e.g. Mixtral on 4.x):
   automatic. Each routed expert recovers its tokens by matching its input rows back
-  to the router input, so `mask_fn` reaches the experts with no configuration.
+  to the router input (a small random-projection fingerprint), so `mask_fn` reaches the
+  experts with no configuration. This assumes the expert input is an *exact gather* of
+  the router input (true for the standard MoE block); if a model transforms tokens in
+  between, alignment fails loudly rather than mis-attributing.
 - **Fused experts** (transformers&nbsp;≥5: Mixtral, Qwen2/3/3.5-MoE, DeepSeek-V2/V3,
   GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …): the experts are 3D
   `nn.Parameter`s computed by one batched op, with no per-expert module to hook. Opt
