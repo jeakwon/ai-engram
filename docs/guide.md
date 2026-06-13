@@ -192,6 +192,14 @@ A scaling function takes the whole `{name: LayerScaleInfo}` dict and returns
     `count_ratio` carries real per-expert weighting there. (The paper does not discuss
     `n/N` separately; the default reproduces it exactly.)
 
+!!! warning "`effective_rank` is experimental"
+    On TOFU forget10 (Llama-3.2-1B) the `er(C_target)/er(C_total)` ratio is **near-uniform**
+    across layers (≈0.65–0.97, median 0.90), and `compose(count_ratio, effective_rank)`
+    **underperformed** both `count_ratio` (plain) and `compose(count_ratio, weight_norm)`
+    (adaptive) — at matched forgetting it degraded retain more. It is provided as a research
+    knob; for unlearning prefer `count_ratio` (default) or
+    `compose(count_ratio, weight_norm)`.
+
 ## One-call editing — `edit_llm`
 
 For HuggingFace causal LMs, `edit_llm` packages tokenize → collect → compute → apply:
