@@ -4,7 +4,7 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.7.0] — 2026-06-13
 
 ### Added
 - **`edit_llm(model, tokenizer, forget, total, …)`** — one-call unlearning/editing for
