@@ -75,6 +75,7 @@ class CovarianceCollector:
         target_modules: Optional[Union[str, List[str]]] = None,
         layers_to_transform: Optional[Union[int, List[int]]] = None,
         layers_pattern: Optional[Union[str, List[str]]] = None,
+        adapters: Optional[List[Any]] = None,
     ) -> None:
         self.model = model
         self.config = config
@@ -82,6 +83,7 @@ class CovarianceCollector:
         self.target_modules = target_modules
         self.layers_to_transform = layers_to_transform
         self.layers_pattern = layers_pattern
+        self.adapters = list(adapters or [])  # opt-in extensions (e.g. fused MoE experts)
         self.covariance_matrices: Dict[str, torch.Tensor] = {}
         self.current_mask: Optional[torch.Tensor] = None
         # per-batch routing-alignment state (used only when a layer sees a subset)
@@ -187,9 +189,15 @@ class CovarianceCollector:
                 module.register_forward_pre_hook(make_hook(name, handler, absorb))
             )
 
+        # opt-in adapters register their own hooks (e.g. fused MoE experts, which
+        # have no per-expert module for the loop above to find). No-op if none.
+        for adapter in self.adapters:
+            adapter.attach(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        for adapter in self.adapters:
+            adapter.detach()
         for h in self._hook_handles:
             h.remove()
         self._hook_handles.clear()

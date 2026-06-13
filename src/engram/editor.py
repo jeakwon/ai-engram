@@ -45,13 +45,21 @@ class EngramEditor:
         # has the same shape as the layer's .bias.
     """
 
-    def __init__(self, model: nn.Module, config: Optional[EditorConfig] = None) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        config: Optional[EditorConfig] = None,
+        adapters: Optional[List[Any]] = None,
+    ) -> None:
         self.model = model
         self.config = config or EditorConfig()
         self.registry: Dict[type, Any] = {nn.Linear: LinearHandler()}
         conv1d = get_conv1d_class()
         if conv1d is not None:
             self.registry[conv1d] = Conv1DHandler()
+        # opt-in extensions for layers the registry can't hook (e.g. fused MoE
+        # experts via engram.moe.FusedExpertAdapter). Empty -> core is MoE-unaware.
+        self.adapters = list(adapters or [])
 
     @property
     def _model_device(self) -> torch.device:
@@ -144,6 +152,7 @@ class EngramEditor:
             target_modules=target_modules,
             layers_to_transform=layers_to_transform,
             layers_pattern=layers_pattern,
+            adapters=self.adapters,
         )
         self.model.eval()
 
@@ -208,10 +217,24 @@ class EngramEditor:
             disable=None,
             desc="Computing engram",
         ):
-            if layer_name not in total_covariance or layer_name not in modules:
+            if layer_name not in total_covariance:
                 continue
 
-            module = modules[layer_name]
+            module = modules.get(layer_name)
+            if module is None:
+                # not a hooked module — an opt-in adapter (e.g. fused MoE experts) may own it
+                adapter = next((a for a in self.adapters if a.owns(layer_name)), None)
+                if adapter is None:
+                    continue
+                dev = self._model_device
+                w = adapter.weight_for(layer_name, self.model).to(dev, torch.float32)
+                weight_engrams[layer_name] = (
+                    w
+                    @ pos_cov.to(dev, torch.float32)
+                    @ torch.linalg.pinv(total_covariance[layer_name].to(dev, torch.float32))
+                )
+                continue
+
             handler = handler_for(self.registry, module)
             if handler is None:
                 continue

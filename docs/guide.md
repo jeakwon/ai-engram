@@ -69,13 +69,40 @@ editor.collect_statistics(
 `mask_fn` is applied at the collector, so it works for **every** layer type —
 `nn.Linear`, GPT-2 `Conv1D`, and any custom handler. It drops the non-selected
 token rows before accumulation (and before the bias-absorption constant, so the
-bias term's count equals the number of selected tokens). **MoE models work too**:
-a routed expert layer recovers its tokens by matching them back to the router
-input, so the mask reaches the experts automatically — no configuration.
+bias term's count equals the number of selected tokens). For **MoE** models, see
+[Mixture-of-experts](#mixture-of-experts) below.
 
 !!! note "Legacy"
     `MaskedLinearHandler` (`editor.registry[nn.Linear] = MaskedLinearHandler()`)
     still works but is `nn.Linear`-only — prefer `mask_fn`.
+
+### Mixture-of-experts
+
+Routing sends each token through only some experts, so an expert's covariance must
+be built from *its* tokens. How that is handled depends on the model's MoE layout:
+
+- **Per-expert `nn.Linear`** (transformers&nbsp;<5, e.g. Mixtral on 4.x):
+  automatic. Each routed expert recovers its tokens by matching its input rows back
+  to the router input, so `mask_fn` reaches the experts with no configuration.
+- **Fused experts** (transformers&nbsp;≥5: Mixtral, Qwen2/3/3.5-MoE, DeepSeek-V2/V3,
+  GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …): the experts are 3D
+  `nn.Parameter`s computed by one batched op, with no per-expert module to hook. Opt
+  in to the **detachable** `engram.moe` adapter:
+
+    ```python
+    from engram import EngramEditor
+    from engram.moe import FusedExpertAdapter, apply_engram_weights
+
+    editor = EngramEditor(model, adapters=[FusedExpertAdapter()])
+    target = editor.collect_statistics(forget_loader, batch_fn=bf, mask_fn=mf)
+    total  = editor.collect_statistics(total_loader,  batch_fn=bf, mask_fn=mf)
+    weight_engrams, _ = editor.compute_engram_weights(target, total)  # + "<experts>.gate_up_proj.<e>" keys
+    apply_engram_weights(model, weight_engrams, alpha=0.6)            # edits the 3D Parameter slices
+    ```
+
+    All MoE-specific logic lives in `engram.moe`; without the adapter the core is
+    MoE-unaware. Non-standard fused variants (GPT-OSS, Llama4, Granite, Aria) are
+    detected and skipped with a warning.
 
 ### Selective layers (LoRA convention)
 

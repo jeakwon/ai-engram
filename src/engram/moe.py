@@ -1,0 +1,170 @@
+"""Optional, detachable support for transformers >=5 fused-expert MoE layers.
+
+Why this is a separate module: the core (collectors / editor) hooks nn.Linear-style
+modules — one module, one weight, one input. transformers >=5 fuses each MoE layer's
+experts into 3D ``nn.Parameter``s (``gate_up_proj`` / ``down_proj``) computed by a
+single batched op, so there is **no per-expert module to hook**. Recovering each
+expert's weight slice and its routed input is intrinsically messy. All of that mess
+is quarantined here, behind a tiny generic interface the core understands
+(``owns`` / ``weight_for``). **Import nothing from this module and the core stays
+exactly as MoE-unaware as before.**
+
+Opt-in::
+
+    from engram import EngramEditor
+    from engram.moe import FusedExpertAdapter
+    editor = EngramEditor(model, adapters=[FusedExpertAdapter()])
+    # ... collect_statistics / compute_engram_weights as usual; per-expert engrams
+    #     come back keyed "<experts>.gate_up_proj.<e>" / ".down_proj.<e>".
+    from engram.moe import apply_engram_weights      # writes Parameter slices
+    apply_engram_weights(model, weight_engrams, alpha=0.6)
+
+Scope — the dominant "standard fused" pattern (~35 arches: Mixtral, Qwen2/3/3.5-MoE,
+DeepSeek-V2/V3, GLM4-MoE, Ernie4.5-MoE, MiniMax, Mistral4, Jamba, OLMoE, Phi-MoE, …):
+experts module exposes 3D ``gate_up_proj`` ``(E, 2*inter, hidden)`` + ``down_proj``
+``(E, hidden, inter)`` + ``act_fn``, and ``forward(hidden_states, top_k_index,
+top_k_weights)``. Other fused variants (gpt_oss bias, llama4 bmm, granite parallel,
+aria grouped-gemm) are detected and skipped with a one-time warning.
+"""
+from __future__ import annotations
+
+import warnings
+from typing import Any, Dict, List, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+GATE_UP, DOWN = "gate_up_proj", "down_proj"
+
+
+def _is_standard_fused(module: nn.Module) -> bool:
+    """Duck-typed detection of the standard fused-experts module (no class names)."""
+    gu = getattr(module, GATE_UP, None)
+    dn = getattr(module, DOWN, None)
+    if not (torch.is_tensor(gu) and torch.is_tensor(dn) and gu.ndim == 3 and dn.ndim == 3):
+        return False
+    if not hasattr(module, "act_fn") or hasattr(module, "gate_up_proj_bias"):
+        return False  # act_fn needed to recompute down's input; bias = gpt_oss variant
+    E, two_inter, hidden = gu.shape          # gate_up_proj: [E, 2*inter, hidden]
+    Ed, hidden2, inter = dn.shape            # down_proj:    [E, hidden, inter]
+    return E == Ed and hidden == hidden2 and two_inter == 2 * inter
+
+
+def _looks_like_experts(module: nn.Module) -> bool:
+    return type(module).__name__.endswith("Experts") or any(
+        p.ndim == 3 for p in module.parameters(recurse=False)
+    )
+
+
+def _split_key(key: str) -> Optional[Tuple[str, str, int]]:
+    """"<experts-name>.gate_up_proj.<e>" -> (name, "gate_up_proj", e)."""
+    for proj in (GATE_UP, DOWN):
+        marker = f".{proj}."
+        if marker in key:
+            name, e = key.rsplit(marker, 1)
+            if e.isdigit():
+                return name, proj, int(e)
+    return None
+
+
+class FusedExpertAdapter:
+    """Collects per-expert input covariance for standard fused MoE experts (opt-in).
+
+    Plugs into the core via three calls: ``attach``/``detach`` (the collector adds
+    its hooks during a covariance pass) and ``owns``/``weight_for`` (the editor asks
+    it to resolve covariance keys it doesn't recognize as modules).
+    """
+
+    def __init__(self) -> None:
+        self._handles: List[Any] = []
+        self._modules: Dict[str, nn.Module] = {}     # experts-module name -> module
+        self._warned: set = set()
+
+    # ---- collection: called by CovarianceCollector.__enter__/__exit__ ----
+    def attach(self, collector: Any) -> None:
+        store = collector._storage_device
+        for name, module in collector.model.named_modules():
+            if not _is_standard_fused(module):
+                if _looks_like_experts(module) and type(module).__name__ not in self._warned:
+                    self._warned.add(type(module).__name__)
+                    warnings.warn(
+                        f"engram.moe: {type(module).__name__} is a fused-expert module but not "
+                        f"the standard gate_up_proj/down_proj pattern — skipping (not yet supported)."
+                    )
+                continue
+            self._modules[name] = module
+            E, two_inter, hidden = module.gate_up_proj.shape
+            inter = two_inter // 2
+            for e in range(E):  # pre-allocate per-expert covariances (gate_up over hidden, down over inter)
+                collector.covariance_matrices[f"{name}.{GATE_UP}.{e}"] = torch.zeros(
+                    (hidden, hidden), device=store, dtype=torch.float32
+                )
+                collector.covariance_matrices[f"{name}.{DOWN}.{e}"] = torch.zeros(
+                    (inter, inter), device=store, dtype=torch.float32
+                )
+            self._handles.append(module.register_forward_pre_hook(self._make_hook(collector, name, module)))
+
+    def detach(self) -> None:
+        for h in self._handles:
+            h.remove()
+        self._handles.clear()
+
+    def _make_hook(self, collector: Any, name: str, module: nn.Module):
+        cov = collector.covariance_matrices
+        store = collector._storage_device
+
+        def hook(mod: nn.Module, args: Tuple[Any, ...]) -> None:
+            # standard fused forward: (hidden_states, top_k_index, top_k_weights)
+            if len(args) < 2 or not torch.is_tensor(args[1]) or torch.is_floating_point(args[1]):
+                return  # unexpected signature -> skip safely
+            hidden_states, top_k_index = args[0], args[1]
+            x = hidden_states.reshape(-1, hidden_states.shape[-1]).to(torch.float32)
+            idx = top_k_index.reshape(x.shape[0], -1)               # [N, k] token -> expert ids
+            m = collector.current_mask
+            if m is not None:
+                m = m.reshape(-1).to(x.device)
+            gate_up = module.gate_up_proj.to(torch.float32)
+            for e in range(gate_up.shape[0]):
+                sel = (idx == e).any(dim=-1)                        # tokens routed to expert e
+                if m is not None:
+                    sel = sel & m                                  # ... that are also answer tokens
+                if not bool(sel.any()):
+                    continue
+                x_e = x[sel]                                        # gate_up's input
+                cov[f"{name}.{GATE_UP}.{e}"].add_((x_e.mT @ x_e).to(store))
+                gate, up = F.linear(x_e, gate_up[e]).chunk(2, dim=-1)
+                inter_e = module.act_fn(gate) * up                 # down's input (recomputed, exact)
+                cov[f"{name}.{DOWN}.{e}"].add_((inter_e.mT @ inter_e).to(store))
+
+        return hook
+
+    # ---- compute: called by EngramEditor.compute_engram_weights for unknown keys ----
+    def owns(self, key: str) -> bool:
+        split = _split_key(key)
+        return split is not None and split[0] in self._modules
+
+    def weight_for(self, key: str, model: nn.Module) -> torch.Tensor:
+        name, proj, e = _split_key(key)  # type: ignore[misc]
+        module = dict(model.named_modules())[name]
+        return getattr(module, proj)[e]  # already [out, in]
+
+
+def apply_engram_weights(model: nn.Module, weight_engrams: Dict[str, torch.Tensor], alpha: float = 1.0) -> None:
+    """Subtract ``alpha * engram`` from each weight, handling fused-expert slice keys.
+
+    Real-module keys edit ``module.weight``; fused-expert keys
+    (``"<experts>.gate_up_proj.<e>"``) edit ``param.data[e]`` of the 3D Parameter.
+    """
+    modules = dict(model.named_modules())
+    with torch.no_grad():
+        for key, w in weight_engrams.items():
+            if key in modules:
+                modules[key].weight.data -= (alpha * w).to(modules[key].weight.dtype)
+                continue
+            split = _split_key(key)
+            if split is None:
+                continue
+            name, proj, e = split
+            param = getattr(modules[name], proj)
+            param.data[e] -= (alpha * w).to(param.dtype)
