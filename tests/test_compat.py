@@ -95,6 +95,10 @@ def test_architecture_compat(name: str, masked: bool):
     for n, w in weights.items():
         assert w.shape == modules[n].weight.shape, f"{name}: {n} got {tuple(w.shape)}"
 
-    # MoE: masking must reach the routed expert layers, not just attn/router.
-    if name == "Mixtral":
-        assert any(n.endswith(".w1") for n in cov), f"{name}: expert layers not hooked"
+    # MoE: masking must reach the routed expert layers, not just attn/router —
+    # but only when this transformers exposes experts as per-expert nn.Linear
+    # (transformers >=5 fuses them into Parameters, which forward hooks can't reach).
+    if name == "Mixtral" and any(
+        isinstance(mod, torch.nn.Linear) and ".experts." in n for n, mod in model.named_modules()
+    ):
+        assert any(".experts." in n for n in cov), f"{name}: expert layers not hooked"

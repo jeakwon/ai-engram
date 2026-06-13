@@ -1,5 +1,6 @@
 # ai-engram
 
+[![tests](https://github.com/jeakwon/ai-engram/actions/workflows/tests.yml/badge.svg)](https://github.com/jeakwon/ai-engram/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Docs](https://img.shields.io/badge/docs-jeakwon.github.io-7c4dff.svg)](https://jeakwon.github.io/ai-engram/)
