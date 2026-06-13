@@ -45,8 +45,12 @@ See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token maskin
   half the memory and compute of a training step.
 - **HF-native.** Works on the mainstream `nn.Linear` decoders (Llama, Mistral,
   Qwen, Gemma, Phi, …) and the GPT-2 family (`Conv1D`) out of the box.
+- **MoE-ready.** Answer-token masking reaches mixture-of-experts; transformers&nbsp;≥5
+  fused experts are supported via the optional, detachable `engram.moe` adapter.
+- **Selective.** Pick layers with `target_modules` — the LoRA/PEFT convention
+  (name suffix or regex) — plus `layers_to_transform`.
 - **Affine-correct.** Bias absorption is automatic for bias-bearing layers.
-- **Tiny.** A few hundred lines; import name `engram`.
+- **Tiny.** A few hundred lines; import name `engram`; covariance + solve in `float32`.
 
 ## Documentation
 
