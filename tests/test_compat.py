@@ -65,9 +65,7 @@ _FEATS = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_
 
 
 def _cpu_cfg() -> EditorConfig:
-    return EditorConfig(
-        storage_device=torch.device("cpu"), precision=torch.float32,
-    )
+    return EditorConfig(storage_device=torch.device("cpu"))
 
 
 def _batch() -> dict:

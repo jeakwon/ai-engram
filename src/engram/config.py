@@ -18,9 +18,6 @@ class EditorConfig:
             per-batch GPU->CPU transfer. Set to ``"cpu"`` when the ``D x D``
             covariances do not fit in VRAM (large/wide models): collection is
             slower (each batch's ``D x D`` is copied to CPU) but feasible.
-        precision: Numerical precision for covariance accumulation and the
-            closed-form solve. ``float64`` is recommended for stability;
-            use ``float32`` for large LLMs to halve covariance memory.
         absorb_bias: When ``True`` (default, *automatic*), layers that have a
             bias are treated as the affine map ``y = Wx + b`` via homogeneous
             coordinates: the input is augmented with a constant ``1`` and the
@@ -30,5 +27,4 @@ class EditorConfig:
     """
 
     storage_device: Optional[Union[str, torch.device]] = None
-    precision: torch.dtype = torch.float64
     absorb_bias: bool = True

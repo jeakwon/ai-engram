@@ -36,7 +36,7 @@ class EngramEditor:
 
     Example::
 
-        editor = EngramEditor(model, EditorConfig(precision=torch.float32))
+        editor = EngramEditor(model, EditorConfig())
         target_cov = editor.collect_statistics(forget_loader, batch_fn=bf)
         total_cov = editor.collect_statistics(all_loader, batch_fn=bf)
         weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
@@ -216,7 +216,9 @@ class EngramEditor:
             if handler is None:
                 continue
 
-            dev, prec = self._model_device, self.config.precision
+            # float32 throughout — see CovarianceCollector (float64's pinv is
+            # catastrophic on ill-conditioned Sigma_total).
+            dev, prec = self._model_device, torch.float32
             sum_cov = total_covariance[layer_name].to(dev, dtype=prec)
             pos_cov = pos_cov.to(dev, dtype=prec)
 

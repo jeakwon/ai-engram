@@ -55,7 +55,7 @@ weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_c
 ```python
 from engram import EngramEditor, EditorConfig
 
-editor = EngramEditor(model, EditorConfig(precision=torch.float32))
+editor = EngramEditor(model, EditorConfig())
 
 batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
 mask_fn  = lambda b: b["labels"] != -100           # covariance over answer tokens only
@@ -85,14 +85,13 @@ as LoRA/PEFT (`["down_proj"]` by name suffix, or a regex string), plus
 | 2. compute | `W_engram = W · Σ_target · pinv(Σ_total)` | one pseudo-inverse per layer |
 | 3. apply *(M2)* | `W ← W − α·W_engram` | a single subtraction |
 
-Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), `float64` solve cast back to the model dtype, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
+Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), a `float32` solve cast back to the model dtype, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
 
 ### Configuration (`EditorConfig`)
 
 | field | default | purpose |
 |---|---|---|
 | `storage_device` | model's device | where covariances are held; set `"cpu"` if the `D×D` matrices don't fit in VRAM (large models) |
-| `precision` | `float64` | accumulation/solve precision (`float32` for big LLMs) |
 | `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
 
 ## Validation

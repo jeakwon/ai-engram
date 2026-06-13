@@ -15,10 +15,7 @@ from engram import EditorConfig, EngramEditor, MaskedLinearHandler
 
 
 def cpu_cfg(**kw) -> EditorConfig:
-    base = dict(
-        storage_device=torch.device("cpu"),
-        precision=torch.float64,
-    )
+    base = dict(storage_device=torch.device("cpu"))
     base.update(kw)
     return EditorConfig(**base)
 
@@ -61,7 +58,7 @@ def test_engram_equals_weight_when_target_is_total():
     W = model[0].weight.detach().to(torch.float64)
     assert set(weights.keys()) == {"0"}
     assert biases == {}  # nothing to absorb
-    assert torch.allclose(weights["0"], W, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +82,7 @@ def test_engram_rank_bounded_by_target_subspace():
     W = model[0].weight.detach().to(torch.float64)
     assert weights["0"].shape == (4, 8)
     assert torch.linalg.matrix_rank(W) == 4  # weight itself is full rank
-    assert torch.linalg.matrix_rank(weights["0"]) <= k  # projection reduced it
+    assert torch.linalg.matrix_rank(weights["0"], rtol=1e-3) <= k  # projection reduced it
 
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +153,8 @@ def test_masked_handler_selects_only_masked_tokens():
     aug = torch.cat([x_sel, torch.ones(x_sel.shape[0], 1, dtype=torch.float64)], dim=1)  # [3, 5]
     expected = aug.mT @ aug
     assert cov["0"].shape == (5, 5)  # augmented
-    assert torch.allclose(cov["0"], expected, atol=1e-8)
-    assert torch.isclose(cov["0"][4, 4], torch.tensor(3.0, dtype=torch.float64))  # token count
+    assert torch.allclose(cov["0"].double(), expected, atol=1e-4)
+    assert torch.isclose(cov["0"][4, 4].double(), torch.tensor(3.0, dtype=torch.float64))  # token count
 
 
 # --------------------------------------------------------------------------- #
@@ -180,8 +177,8 @@ def test_bias_absorption_recovers_weight_and_bias():
     b = model[0].bias.detach().to(torch.float64)
     assert weights["0"].shape == W.shape
     assert "0" in biases and biases["0"].shape == b.shape
-    assert torch.allclose(weights["0"], W, atol=1e-6, rtol=1e-5)
-    assert torch.allclose(biases["0"], b, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
+    assert torch.allclose(biases["0"].double(), b, atol=1e-4, rtol=1e-3)  # float32 solve
 
 
 # --------------------------------------------------------------------------- #
@@ -201,7 +198,7 @@ def test_absorb_bias_off_is_weight_only():
     weights, biases = editor.compute_engram_weights(cov, cov)
     W = model[0].weight.detach().to(torch.float64)
     assert biases == {}
-    assert torch.allclose(weights["0"], W, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
 
 
 # --------------------------------------------------------------------------- #
@@ -221,7 +218,7 @@ def test_mask_fn_generic_linear_and_conv1d():
     )
     sel = X.reshape(-1, 4)[labels.reshape(-1) != -100].double()
     assert cov["0"].shape == (4, 4)
-    assert torch.allclose(cov["0"], sel.mT @ sel, atol=1e-8)
+    assert torch.allclose(cov["0"].double(), sel.mT @ sel, atol=1e-4)
 
     # (b) GPT-2 Conv1D — the same mask_fn works (MaskedLinearHandler would crash)
     pytest.importorskip("transformers")
@@ -251,7 +248,7 @@ def test_mask_fn_generic_linear_and_conv1d():
 
     cov2 = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
     assert cov2[cattn].shape == (16, 16)
-    assert torch.allclose(cov2[cattn], sel2.mT @ sel2, atol=1e-6)
+    assert torch.allclose(cov2[cattn].double(), sel2.mT @ sel2, atol=1e-4)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,7 +306,7 @@ def test_mask_fn_moe_mixtral():
     assert (match.sum(1) == 1).all()
     idx = match.float().argmax(1)
     sel = cap["e"][(lab.reshape(-1) != -100)[idx]]
-    assert torch.allclose(cov[w1], sel.mT @ sel, atol=1e-5)
+    assert torch.allclose(cov[w1].double(), sel.mT @ sel, atol=1e-3)
 
 
 # A tiny decoder-style stack: module names are layers.{i}.{down,up}_proj, so the
@@ -406,7 +403,7 @@ def test_default_storage_follows_model_device():
     assert EditorConfig().storage_device is None
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(6, 3, bias=False)).eval()  # lives on CPU
-    cov = EngramEditor(model, EditorConfig(precision=torch.float64)).collect_statistics(
+    cov = EngramEditor(model, EditorConfig()).collect_statistics(
         DataLoader(TensorDataset(torch.randn(32, 6)), batch_size=8)
     )
     assert cov["0"].device.type == "cpu"  # followed the (CPU) model, not pinned elsewhere

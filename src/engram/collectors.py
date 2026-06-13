@@ -161,14 +161,18 @@ class CovarianceCollector:
 
             absorb = self.config.absorb_bias and getattr(module, "bias", None) is not None
             dim = handler.get_input_dim(module, absorb_bias=absorb)
+            # float32 throughout: float64's finer pinv rcond keeps the near-null
+            # directions of an ill-conditioned Sigma and 1/sigma-amplifies them into
+            # a catastrophic edit (TOFU Overall ~0); float32's coarser cut happens to
+            # discard them, which is the regularization that makes the edit work.
             self.covariance_matrices[name] = torch.zeros(
-                (dim, dim), device=self._storage_device, dtype=self.config.precision
+                (dim, dim), device=self._storage_device, dtype=torch.float32
             )
 
             def make_hook(layer_name: str, layer_handler: LayerHandler, absorb_bias: bool):
                 def hook(mod: nn.Module, inputs: Any) -> None:
                     x = layer_handler.reshape_input(mod, inputs, absorb_bias=absorb_bias).to(
-                        self.config.precision
+                        torch.float32
                     )
                     sel = self._select(x)
                     if sel is not None:
