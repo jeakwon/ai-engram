@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from .collectors import CovarianceCollector
 from .config import EditorConfig
 from .handlers import Conv1DHandler, LinearHandler, get_conv1d_class, handler_for
-from .scaling import EngramResult, LayerScaleInfo, ScaleFn, count_ratio
+from .scaling import EngramResult, LayerScaleInfo, ScaleFn, _erank, count_ratio
 from .stats import Statistics
 
 logger = logging.getLogger("engram")
@@ -183,7 +183,7 @@ class EngramEditor:
         target_covariances: Union[Statistics, List[Statistics]],
         total_covariance: Statistics,
         *,
-        keep_covariance: bool = False,
+        compute_erank: bool = False,
     ) -> EngramResult:
         """Compute the per-layer engram projection ``P = W . C_target . pinv(C_total)``.
 
@@ -199,9 +199,9 @@ class EngramEditor:
                 set). A single :class:`Statistics`, or a list merged first
                 (count-weighted) via :meth:`merge_statistics`.
             total_covariance: statistics of the total/reference set.
-            keep_covariance: keep a reference to each layer's total covariance in the
-                result (needed only by :func:`engram.scaling.effective_rank`). Default
-                ``False`` — covariances are not retained, so they can be freed.
+            compute_erank: also compute each layer's target/total effective rank and store
+                them in the result (needed only by :func:`engram.scaling.effective_rank`).
+                Default ``False`` — skips the extra eigendecompositions.
 
         Returns:
             An :class:`engram.scaling.EngramResult`: ``layers[name]`` holds the projection
@@ -235,7 +235,8 @@ class EngramEditor:
             n = int(target_covariances.count.get(layer_name, 0))
             N = int(total_covariance.count.get(layer_name, 0))
             pinv_total = torch.linalg.pinv(c_total)
-            kept = c_total if keep_covariance else None  # only effective_rank needs it; else freed
+            er_t = _erank(c_target) if compute_erank else None  # only effective_rank needs these
+            er_a = _erank(c_total) if compute_erank else None
 
             module = modules.get(layer_name)
             if module is None:
@@ -247,7 +248,7 @@ class EngramEditor:
                 result.layers[layer_name] = LayerScaleInfo(
                     name=layer_name, weight=w.detach().clone(),  # snapshot (norms only)
                     projection=w.to(dev, dtype=prec) @ c_target @ pinv_total,
-                    n=n, N=N, total_cov=kept,
+                    n=n, N=N, target_erank=er_t, total_erank=er_a,
                 )
                 continue
 
@@ -266,7 +267,7 @@ class EngramEditor:
                 proj = handler.to_weight_shape(full, module)
             result.layers[layer_name] = LayerScaleInfo(
                 name=layer_name, weight=module.weight.detach().clone(),  # snapshot: immune to later in-place edits
-                projection=proj, n=n, N=N, total_cov=kept,
+                projection=proj, n=n, N=N, target_erank=er_t, total_erank=er_a,
             )
 
         return result
@@ -326,11 +327,11 @@ class EngramEditor:
         alpha: float = 1.0,
         scale: Optional[ScaleFn] = None,
         inplace: bool = False,
-        keep_covariance: bool = False,
+        compute_erank: bool = False,
     ) -> nn.Module:
         """One call: :meth:`compute_engram_weights` then :meth:`apply`; returns the edited model."""
         engram = self.compute_engram_weights(
-            target_covariances, total_covariance, keep_covariance=keep_covariance
+            target_covariances, total_covariance, compute_erank=compute_erank
         )
         return self.apply(engram, alpha=alpha, scale=scale, inplace=inplace)
 

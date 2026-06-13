@@ -20,6 +20,7 @@ from .handlers import (
     LinearHandler,
     handler_for,
 )
+from .llm import edit_llm
 from .scaling import (
     EngramResult,
     LayerScaleInfo,
@@ -35,6 +36,7 @@ from .stats import Statistics
 __all__ = [
     "EditorConfig",
     "EngramEditor",
+    "edit_llm",
     "CovarianceCollector",
     "Statistics",
     "EngramResult",

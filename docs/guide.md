@@ -171,7 +171,7 @@ makes it explicit and pluggable:
 |---|---|---|
 | `count_ratio(p)` | `(nₗ/Nₗ)ᵖ` | **default** (`p=1` ⇒ the paper); target/total sample-count ratio |
 | `weight_norm(p)` | `(relₗ / max rel)ᵖ`, `relₗ = ‖Pₗ‖/‖Wₗ‖` | edits layers by how strongly the engram occupies them |
-| `effective_rank(p)` | `(erₗ / max er)ᵖ` | by the effective rank of `C_total` (needs `compute_engram_weights(..., keep_covariance=True)`) |
+| `effective_rank(p)` | `(er(C_target)/er(C_total))ᵖ` | target-vs-total effective rank per layer (needs `compute_engram_weights(..., compute_erank=True)`) |
 | `uniform()` | `1` | subtract the bare projection |
 | `compose(a, b, …)` | `∏ fᵢ` | multiply several together |
 
@@ -191,6 +191,55 @@ A scaling function takes the whole `{name: LayerScaleInfo}` dict and returns
     For **fused MoE** experts the routed counts `n_e/N_e` differ per expert, so
     `count_ratio` carries real per-expert weighting there. (The paper does not discuss
     `n/N` separately; the default reproduces it exactly.)
+
+## One-call editing — `edit_llm`
+
+For HuggingFace causal LMs, `edit_llm` packages tokenize → collect → compute → apply:
+
+```python
+from engram import edit_llm
+
+forget = ["The Eiffel Tower is in Paris."]                  # str: every real token
+retain = ["Water boils at 100 °C.", "The sky is blue."]
+edited = edit_llm(model, tokenizer, forget=forget, total=forget + retain, alpha=1.0)
+```
+
+Items are `str` (covariance over all real tokens) or `(prompt, answer)` tuples (covariance
+over the **answer** tokens only — the prompt is masked). `total` is the reference set
+(typically `forget + retain` or a broad corpus). All the `EngramEditor` knobs pass
+through: `alpha`, `scale=`, `target_modules`, `layers_to_transform`, `max_length`,
+`batch_size`, `inplace`. No chat template is applied — pre-format prompts yourself.
+
+!!! note "Try it on your model (demo)"
+    Engram editing *removes memorized knowledge*, so the effect is strongest on facts the
+    model actually learned. A quick before/after check on any LM:
+
+    ```python
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from engram import edit_llm
+
+    tok = AutoTokenizer.from_pretrained("distilgpt2")
+    model = AutoModelForCausalLM.from_pretrained("distilgpt2").eval()
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    forget = ["Marie Curie discovered radium and polonium."]
+    retain = ["The capital of France is Paris.", "Water is made of hydrogen and oxygen."]
+
+    def nll(m, text):
+        ids = tok(text, return_tensors="pt")
+        with torch.no_grad():
+            return m(**ids, labels=ids["input_ids"]).loss.item()
+
+    before = {t: nll(model, t) for t in forget + retain}
+    edited = edit_llm(model, tok, forget=forget, total=forget + retain, alpha=1.0)
+    after = {t: nll(edited, t) for t in forget + retain}   # forget NLL should rise most
+    ```
+
+    Illustrative, not a benchmark — the magnitude depends on how strongly the model
+    memorized the forget text. The rigorous TOFU reproduction lives in
+    [`tests/`](https://github.com/jeakwon/ai-engram/tree/main/tests).
 
 ## Bias absorption
 

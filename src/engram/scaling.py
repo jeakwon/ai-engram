@@ -12,7 +12,7 @@ Built-ins:
 
 - :func:`count_ratio` ``f_l = (n_l / N_l) ** power``  — **default**; ``power=1`` is the paper.
 - :func:`weight_norm`  ``f_l = (rel_l / max rel) ** power``, ``rel_l = ||P_l|| / ||W_l||``.
-- :func:`effective_rank` ``f_l = (er_l / max er) ** power``, ``er_l`` = effective rank of ``C_total``.
+- :func:`effective_rank` ``f_l = (er(C_target) / er(C_total)) ** power`` per layer.
 - :func:`uniform`      ``f_l = 1``.
 - :func:`compose`      multiply several together, e.g. ``compose(count_ratio(1.0), weight_norm(1.0))``.
 
@@ -35,6 +35,21 @@ import torch
 _EPS = 1e-8
 
 
+def _erank(cov: torch.Tensor) -> float:
+    """Effective rank: ``exp(H)`` of the normalized eigenvalue spectrum (Roy & Vetterli, 2007).
+
+    Scale-invariant (so the mean covariance gives the same value as the summed one);
+    ranges in ``[1, D]``. Returns 0 for an all-zero covariance.
+    """
+    ev = torch.linalg.eigvalsh(cov.to(torch.float32)).clamp(min=0)
+    s = ev.sum()
+    if s <= 0:
+        return 0.0
+    p = ev / s
+    p = p[p > 0]
+    return float(torch.exp(-(p * p.log()).sum()))
+
+
 @dataclass
 class LayerScaleInfo:
     """Per-layer inputs handed to a scaling function."""
@@ -44,7 +59,8 @@ class LayerScaleInfo:
     projection: torch.Tensor   # P_l = W . C_target . pinv(C_total), same shape as weight
     n: int                     # target sample count
     N: int                     # total sample count
-    total_cov: Optional[torch.Tensor] = None  # C_total (mean), [D, D] — only kept for effective_rank
+    target_erank: Optional[float] = None  # effective rank of C_target — only set for effective_rank
+    total_erank: Optional[float] = None   # effective rank of C_total
 
 
 @dataclass
@@ -99,32 +115,25 @@ def weight_norm(power: float = 1.0) -> ScaleFn:
 
 
 def effective_rank(power: float = 1.0) -> ScaleFn:
-    """``f_l = (er_l / max er) ** power``, ``er_l`` = effective rank of ``C_total_l``.
+    """``f_l = (er(C_target_l) / er(C_total_l)) ** power`` per layer.
 
-    ``er = exp(H)`` where ``H`` is the Shannon entropy of the normalized eigenvalue
-    spectrum of the (PSD) total covariance (Roy & Vetterli, 2007) — how many input
-    directions the layer actually uses. Scale-invariant, so the mean covariance gives
-    the same value as the summed one.
+    The ratio of the **effective rank** (see :func:`_erank`) of the target covariance to
+    that of the total — how dimensionally rich the forget inputs are relative to the whole
+    at each layer. Needs the per-layer effective ranks, i.e.
+    ``compute_engram_weights(..., compute_erank=True)``.
     """
 
     def fn(infos: Dict[str, LayerScaleInfo]) -> Dict[str, float]:
-        er: Dict[str, float] = {}
+        out: Dict[str, float] = {}
         for k, i in infos.items():
-            if i.total_cov is None:
+            if i.target_erank is None or i.total_erank is None:
                 raise ValueError(
-                    "effective_rank needs the total covariance; recompute with "
-                    "compute_engram_weights(..., keep_covariance=True)."
+                    "effective_rank needs per-layer effective ranks; recompute with "
+                    "compute_engram_weights(..., compute_erank=True)."
                 )
-            ev = torch.linalg.eigvalsh(i.total_cov.to(torch.float32)).clamp(min=0)
-            s = ev.sum()
-            if s <= 0:
-                er[k] = 0.0
-                continue
-            p = ev / s
-            p = p[p > 0]
-            er[k] = float(torch.exp(-(p * p.log()).sum()))
-        mx = max(er.values(), default=1.0) or 1.0
-        return {k: (v / mx) ** power for k, v in er.items()}
+            ratio = (i.target_erank / i.total_erank) if i.total_erank > 0 else 0.0
+            out[k] = ratio ** power
+        return out
 
     return fn
 
