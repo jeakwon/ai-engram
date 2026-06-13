@@ -38,8 +38,12 @@ cov[name] += x.mT @ x      # D×D, on config.storage_device
   default** (fastest — added in place, no GPU→CPU transfer); the `xᵀx` itself is
   always computed on the model's device. Set `storage_device="cpu"` when they
   don't fit in VRAM (see the tip below).
-- **Precision.** Accumulated in `config.precision` (`float64` default) for
-  numerical stability; use `float32` for large LLMs to halve memory.
+- **Precision (`float32`, fixed).** Accumulation and the closed-form solve run in
+  `float32` — deliberately *not* `float64`. On ill-conditioned `Σ_total` (real LLM
+  layers reach condition number ~1e13), `float64`'s finer `pinv` cutoff keeps the
+  near-null directions and `1/σ`-amplifies them into a catastrophic edit (TOFU
+  Overall ~0); `float32`'s coarser cutoff discards them — the implicit
+  regularization that makes the edit work.
 
 !!! tip "When to move covariances to CPU"
     Covariances default to the **model's device** and cost `Σₗ Dₗ²` *extra* memory
@@ -162,7 +166,7 @@ Custom layers: implement `LayerHandler` (`get_input_dim`, `reshape_input`,
 | forward pre-hooks | `CovarianceCollector` | no backward pass |
 | closed-form solve | `compute_engram_weights` | one `pinv` per layer, no training loop |
 | CPU covariance storage | `storage_device` | keeps large `D×D` off the GPU |
-| `float64` accumulation | `precision` | stable `pinv`, cast back to model dtype |
+| `float32` throughout | (fixed) | coarse `pinv` cutoff regularizes ill-conditioned `Σ` |
 | `inference_mode` / `no_grad` | both stages | no autograd overhead |
 | selective `target_modules` | collection | edit only what you need (LoRA convention) |
 | answer-token masking | `mask_fn` | covariance over relevant tokens only (any layer, incl. MoE) |

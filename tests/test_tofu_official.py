@@ -100,9 +100,7 @@ def test_tofu_official_overall():
     # --- engram weights via the package (answer-token-masked covariance) ---
     base = load(BASE_ID)
     masked = MaskedLinearHandler()
-    cfg = EditorConfig(
-        storage_device=torch.device(device), precision=torch.float32
-    )
+    cfg = EditorConfig(storage_device=torch.device(device))
     editor = EngramEditor(base, cfg)
     editor.registry[nn.Linear] = masked
 

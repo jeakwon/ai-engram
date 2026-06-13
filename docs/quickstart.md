@@ -9,7 +9,7 @@ target set, **collect** it over the total/reference set, **compute** the engram.
 import torch
 from engram import EngramEditor, EditorConfig
 
-editor = EngramEditor(model, EditorConfig(precision=torch.float64))
+editor = EngramEditor(model, EditorConfig())
 
 target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
 total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
@@ -35,7 +35,7 @@ from engram import EngramEditor, EditorConfig
 tok = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16).eval()
 
-editor = EngramEditor(model, EditorConfig(precision=torch.float32))
+editor = EngramEditor(model, EditorConfig())
 
 # accumulate covariance over answer tokens only (labels != -100)
 batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
