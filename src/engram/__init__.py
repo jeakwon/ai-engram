@@ -1,8 +1,10 @@
 """engram — minimal, efficient covariance-based engram extraction.
 
-Milestone 1: collect input covariances and extract per-layer *engram weights*
+Collect input covariances and extract per-layer *engram weights*
 ``W_engram = W . Sigma_target . pinv(Sigma_total)`` for PyTorch / HuggingFace
-models. Applying the edit is a later milestone.
+models — forward-only, closed-form, with automatic bias absorption and answer-token
+masking. Optional fused-MoE support lives in ``engram.moe``.
+See https://jeakwon.github.io/ai-engram/.
 """
 
 from __future__ import annotations
@@ -29,4 +31,4 @@ __all__ = [
     "handler_for",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

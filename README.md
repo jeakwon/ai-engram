@@ -77,6 +77,12 @@ as LoRA/PEFT (`["down_proj"]` by name suffix, or a regex string), plus
 `layers_to_transform` for decoder-layer indices. See the
 [Quickstart guide](https://jeakwon.github.io/ai-engram/quickstart/) for details.
 
+**Mixture-of-experts.** Answer-token masking reaches the experts automatically on
+transformers&nbsp;<5; on transformers&nbsp;≥5 (fused experts) opt in to the
+detachable `engram.moe` adapter — `EngramEditor(model, adapters=[FusedExpertAdapter()])` —
+covering ~35 fused MoE architectures (Mixtral, Qwen2/3/3.5-MoE, DeepSeek-V3,
+GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …).
+
 ## How it works
 
 | step | what | cost |

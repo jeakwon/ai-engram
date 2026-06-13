@@ -46,6 +46,18 @@ total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn
 weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
 ```
 
+!!! tip "Mixture-of-experts"
+    On transformers&nbsp;≥5 the experts are fused 3D parameters with no per-expert
+    module to hook. Opt in to the detachable adapter to edit them — everything else
+    stays the same:
+
+    ```python
+    from engram.moe import FusedExpertAdapter
+    editor = EngramEditor(model, adapters=[FusedExpertAdapter()])
+    ```
+
+    See [Guide → Mixture-of-experts](guide.md#mixture-of-experts).
+
 ## Applying the edit
 
 !!! note "Milestone 2 preview"
