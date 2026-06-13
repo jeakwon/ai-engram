@@ -1,4 +1,4 @@
-"""Milestone-1 extraction tests (CPU-only, deterministic, offline).
+"""Extraction + scaling tests (CPU-only, deterministic, offline).
 
 Run via SLURM (no login-node execution):
     pytest -q tests/
@@ -11,13 +11,37 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from engram import EditorConfig, EngramEditor
+from engram import (
+    EditorConfig,
+    EngramEditor,
+    EngramResult,
+    LayerScaleInfo,
+    Statistics,
+    compose,
+    count_ratio,
+    effective_rank,
+    uniform,
+    weight_norm,
+)
 
 
 def cpu_cfg(**kw) -> EditorConfig:
     base = dict(storage_device=torch.device("cpu"))
     base.update(kw)
     return EditorConfig(**base)
+
+
+def _info(name, proj, *, weight=None, n=1, N=1, d=None):
+    """A LayerScaleInfo for hand-built EngramResults (total_cov defaults to I)."""
+    d = d if d is not None else proj.shape[-1]
+    return LayerScaleInfo(
+        name=name,
+        weight=weight if weight is not None else torch.zeros_like(proj),
+        projection=proj,
+        n=n,
+        N=N,
+        total_cov=torch.eye(d),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -31,6 +55,14 @@ def test_public_api():
         "EditorConfig",
         "EngramEditor",
         "CovarianceCollector",
+        "Statistics",
+        "EngramResult",
+        "LayerScaleInfo",
+        "count_ratio",
+        "weight_norm",
+        "effective_rank",
+        "uniform",
+        "compose",
         "LayerHandler",
         "LinearHandler",
         "Conv1DHandler",
@@ -39,8 +71,8 @@ def test_public_api():
 
 
 # --------------------------------------------------------------------------- #
-# T1: correctness anchor (no bias) — if Sigma_target == Sigma_total and Sigma is
-# full rank, Sigma . pinv(Sigma) == I, so W_engram must equal W exactly.
+# T1: correctness anchor (no bias) — if C_target == C_total and C is full rank,
+# C . pinv(C) == I, so the projection P must equal W exactly.
 # --------------------------------------------------------------------------- #
 def test_engram_equals_weight_when_target_is_total():
     torch.manual_seed(0)
@@ -52,17 +84,18 @@ def test_engram_equals_weight_when_target_is_total():
 
     cov = editor.collect_statistics(loader)
     assert cov["0"].shape == (8, 8)  # not augmented (bias-free)
+    assert cov.count["0"] == 512
 
-    weights, biases = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
     W = model[0].weight.detach().to(torch.float64)
-    assert set(weights.keys()) == {"0"}
-    assert biases == {}  # nothing to absorb
-    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
+    assert set(result.layers) == {"0"}
+    assert result.bias == {}  # nothing to absorb
+    assert torch.allclose(result.layers["0"].projection.double(), W, atol=1e-4, rtol=1e-3)
 
 
 # --------------------------------------------------------------------------- #
-# T2: subspace — target inputs spanning a k-dim subspace make Sigma.pinv(Sigma)
-# a rank-k projector, so the engram weight has rank <= k (< full weight rank).
+# T2: subspace — target inputs spanning a k-dim subspace make C.pinv(C) a rank-k
+# projector, so the projection has rank <= k (< full weight rank).
 # --------------------------------------------------------------------------- #
 def test_engram_rank_bounded_by_target_subspace():
     torch.manual_seed(0)
@@ -76,18 +109,17 @@ def test_engram_rank_bounded_by_target_subspace():
     loader = DataLoader(TensorDataset(X), batch_size=64)
 
     cov = editor.collect_statistics(loader)
-    weights, biases = editor.compute_engram_weights(cov, cov)
+    proj = editor.compute_engram_weights(cov, cov).layers["0"].projection
 
     W = model[0].weight.detach().to(torch.float64)
-    assert weights["0"].shape == (4, 8)
+    assert proj.shape == (4, 8)
     assert torch.linalg.matrix_rank(W) == 4  # weight itself is full rank
-    assert torch.linalg.matrix_rank(weights["0"], rtol=1e-3) <= k  # projection reduced it
+    assert torch.linalg.matrix_rank(proj, rtol=1e-3) <= k  # projection reduced it
 
 
 # --------------------------------------------------------------------------- #
-# T3: GPT-2 Conv1D path — built from config (no download). Verifies the
-# transpose round-trip (engram weight keeps the layer's [in, out] shape) and
-# that bias-bearing Conv1D layers produce bias engrams of the right shape.
+# T3: GPT-2 Conv1D path — verifies the transpose round-trip (projection keeps the
+# layer's [in, out] shape) and bias-bearing Conv1D layers produce bias projections.
 # --------------------------------------------------------------------------- #
 def test_gpt2_conv1d_shapes_and_bias():
     pytest.importorskip("transformers")
@@ -106,29 +138,29 @@ def test_gpt2_conv1d_shapes_and_bias():
     ids = torch.randint(0, 128, (4, 16))
     batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids)}
     cov = editor.collect_statistics([batch], batch_fn=lambda b: b)
-    weights, biases = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
 
     modules = dict(model.named_modules())
-    for name, w in weights.items():
-        assert w.shape == modules[name].weight.shape, name
-    for name, b in biases.items():
+    for name, info in result.layers.items():
+        assert info.projection.shape == modules[name].weight.shape, name
+    for name, b in result.bias.items():
         assert b.shape == modules[name].bias.shape, name
 
     conv1d_names = [n for n, m in modules.items() if isinstance(m, Conv1D)]
     assert conv1d_names, "no Conv1D modules found in GPT-2"
-    # Conv1D always has a bias -> absorbed -> present in both dicts
-    assert all(n in weights and n in biases for n in conv1d_names)
+    # Conv1D always has a bias -> absorbed -> present in both layers and bias
+    assert all(n in result.layers and n in result.bias for n in conv1d_names)
 
     cattn = next(n for n in conv1d_names if n.endswith("attn.c_attn"))
-    assert weights[cattn].shape == (32, 96)  # [n_embd, 3*n_embd], orientation kept
-    assert biases[cattn].shape == (96,)
-    # lm_head is bias-free -> weight only, no bias engram
-    assert "lm_head" in weights and "lm_head" not in biases
+    assert result.layers[cattn].projection.shape == (32, 96)  # [n_embd, 3*n_embd], kept
+    assert result.bias[cattn].shape == (96,)
+    # lm_head is bias-free -> projection only, no bias engram
+    assert "lm_head" in result.layers and "lm_head" not in result.bias
 
 
 # --------------------------------------------------------------------------- #
-# T5: bias absorption — with a bias-bearing layer and Sigma_target == Sigma_total
-# (full rank), the engram recovers BOTH W and b exactly.
+# T5: bias absorption — with a bias-bearing layer and C_target == C_total (full
+# rank), the engram recovers BOTH W and b exactly.
 # --------------------------------------------------------------------------- #
 def test_bias_absorption_recovers_weight_and_bias():
     torch.manual_seed(0)
@@ -141,13 +173,13 @@ def test_bias_absorption_recovers_weight_and_bias():
     cov = editor.collect_statistics(loader)
     assert cov["0"].shape == (9, 9)  # augmented [x ; 1]
 
-    weights, biases = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
     W = model[0].weight.detach().to(torch.float64)
     b = model[0].bias.detach().to(torch.float64)
-    assert weights["0"].shape == W.shape
-    assert "0" in biases and biases["0"].shape == b.shape
-    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
-    assert torch.allclose(biases["0"].double(), b, atol=1e-4, rtol=1e-3)  # float32 solve
+    assert result.layers["0"].projection.shape == W.shape
+    assert "0" in result.bias and result.bias["0"].shape == b.shape
+    assert torch.allclose(result.layers["0"].projection.double(), W, atol=1e-4, rtol=1e-3)
+    assert torch.allclose(result.bias["0"].double(), b, atol=1e-4, rtol=1e-3)
 
 
 # --------------------------------------------------------------------------- #
@@ -164,18 +196,19 @@ def test_absorb_bias_off_is_weight_only():
     cov = editor.collect_statistics(loader)
     assert cov["0"].shape == (8, 8)  # not augmented
 
-    weights, biases = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
     W = model[0].weight.detach().to(torch.float64)
-    assert biases == {}
-    assert torch.allclose(weights["0"].double(), W, atol=1e-4, rtol=1e-3)  # float32 solve
+    assert result.bias == {}
+    assert torch.allclose(result.layers["0"].projection.double(), W, atol=1e-4, rtol=1e-3)
 
 
 # --------------------------------------------------------------------------- #
 # T7: collector-level mask_fn restricts covariance to selected tokens, for any
-# layer type — including GPT-2 Conv1D, which a per-handler mask couldn't reach.
+# layer type — including GPT-2 Conv1D. Covariance is now the MEAN of x^T x over
+# the selected rows, with the count tracked alongside.
 # --------------------------------------------------------------------------- #
 def test_mask_fn_generic_linear_and_conv1d():
-    # (a) nn.Linear — mask_fn keeps exactly the masked token rows
+    # (a) nn.Linear — mask_fn keeps exactly the masked token rows; cov is their mean
     torch.manual_seed(0)
     lin = nn.Sequential(nn.Linear(4, 3, bias=False)).eval()
     editor = EngramEditor(lin, cpu_cfg())
@@ -187,7 +220,8 @@ def test_mask_fn_generic_linear_and_conv1d():
     )
     sel = X.reshape(-1, 4)[labels.reshape(-1) != -100].double()
     assert cov["0"].shape == (4, 4)
-    assert torch.allclose(cov["0"].double(), sel.mT @ sel, atol=1e-4)
+    assert cov.count["0"] == 3
+    assert torch.allclose(cov["0"].double(), sel.mT @ sel / sel.shape[0], atol=1e-4)
 
     # (b) GPT-2 Conv1D — the same mask_fn works on the Conv1D path too
     pytest.importorskip("transformers")
@@ -217,12 +251,13 @@ def test_mask_fn_generic_linear_and_conv1d():
 
     cov2 = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
     assert cov2[cattn].shape == (16, 16)
-    assert torch.allclose(cov2[cattn].double(), sel2.mT @ sel2, atol=1e-4)
+    assert cov2.count[cattn] == 4
+    assert torch.allclose(cov2[cattn].double(), sel2.mT @ sel2 / sel2.shape[0], atol=1e-4)
 
 
 # --------------------------------------------------------------------------- #
 # T8: MoE masking — routed expert layers recover their answer-token mask by
-# matching rows back to the router input (no routing knowledge needed).
+# matching rows back to the router input (per-expert nn.Linear layout, tf 4.x).
 # --------------------------------------------------------------------------- #
 def test_mask_fn_moe_mixtral():
     pytest.importorskip("transformers")
@@ -249,15 +284,18 @@ def test_mask_fn_moe_mixtral():
 
     # masking used to crash on the routed expert layers — now it runs
     cov = ed.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
-    we, _ = ed.compute_engram_weights(cov, cov)
+    result = ed.compute_engram_weights(cov, cov)
     expert_w1 = [n for n in cov if n.endswith(".w1")]
     assert expert_w1, "no MoE expert layers were hooked"
     mods = dict(m.named_modules())
-    for n in we:
-        assert we[n].shape == mods[n].weight.shape, n
+    for n in result.layers:
+        assert result.layers[n].projection.shape == mods[n].weight.shape, n
 
-    # correctness: brute-force align one expert's w1 against the router input
-    w1 = expert_w1[0]
+    # correctness: brute-force align one expert's w1 against the router input.
+    # Pick an expert that actually received answer tokens (some get none this seed),
+    # else the mean reference below would divide by a zero count.
+    w1 = max(expert_w1, key=lambda n: cov.count[n])
+    assert cov.count[w1] > 0, "no expert received an answer token"
     gate = w1.rsplit(".experts.", 1)[0] + ".gate"
     cap = {}
     hg = mods[gate].register_forward_pre_hook(
@@ -275,7 +313,9 @@ def test_mask_fn_moe_mixtral():
     assert (match.sum(1) == 1).all()
     idx = match.float().argmax(1)
     sel = cap["e"][(lab.reshape(-1) != -100)[idx]]
-    assert torch.allclose(cov[w1].double(), sel.mT @ sel, atol=1e-3)
+    # cov is now the MEAN over the selected rows
+    assert cov.count[w1] == sel.shape[0]
+    assert torch.allclose(cov[w1].double(), sel.mT @ sel / sel.shape[0], atol=1e-3)
 
 
 # A tiny decoder-style stack: module names are layers.{i}.{down,up}_proj, so the
@@ -301,8 +341,8 @@ def _stack_loader(d: int = 4):
 
 
 # --------------------------------------------------------------------------- #
-# T9: target_modules LoRA convention — a list matches by dotted name suffix
-# (across every layer); a string is a regex over the full module path.
+# T9: target_modules LoRA convention — a list matches by dotted name suffix; a
+# string is a regex over the full module path.
 # --------------------------------------------------------------------------- #
 def test_target_modules_suffix_and_regex():
     torch.manual_seed(0)
@@ -346,8 +386,7 @@ def test_layers_to_transform_selects_by_index():
 
 
 # --------------------------------------------------------------------------- #
-# T11: target_layers still works as a deprecated alias — exact module names match
-# exactly as before, and a DeprecationWarning is emitted.
+# T11: target_layers still works as a deprecated alias.
 # --------------------------------------------------------------------------- #
 def test_target_layers_deprecated_alias():
     import warnings
@@ -365,8 +404,7 @@ def test_target_layers_deprecated_alias():
 
 
 # --------------------------------------------------------------------------- #
-# T12: storage_device defaults to None, which follows the model's device — so on
-# a CPU model the covariances are accumulated on CPU (no config needed).
+# T12: storage_device defaults to None -> follows the model's device.
 # --------------------------------------------------------------------------- #
 def test_default_storage_follows_model_device():
     assert EditorConfig().storage_device is None
@@ -375,26 +413,28 @@ def test_default_storage_follows_model_device():
     cov = EngramEditor(model, EditorConfig()).collect_statistics(
         DataLoader(TensorDataset(torch.randn(32, 6)), batch_size=8)
     )
-    assert cov["0"].device.type == "cpu"  # followed the (CPU) model, not pinned elsewhere
+    assert cov["0"].device.type == "cpu"  # followed the (CPU) model
 
 
 # --------------------------------------------------------------------------- #
-# T13: apply (M2) — W <- W - alpha*W_engram; copy by default, inplace optional.
+# T13: apply — W <- W - alpha*f*P; copy by default, inplace optional. uniform()
+# gives f=1, so the bare projection is subtracted.
 # --------------------------------------------------------------------------- #
 def test_apply_uniform_copy_and_inplace():
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(4, 3, bias=False)).eval()
     W0 = model[0].weight.detach().clone()
-    we = {"0": torch.randn(3, 4)}
+    proj = torch.randn(3, 4)
+    engram = EngramResult(layers={"0": _info("0", proj, weight=W0)})
     editor = EngramEditor(model, cpu_cfg())
 
-    edited = editor.apply(we, alpha=0.5)  # copy by default
+    edited = editor.apply(engram, alpha=0.5, scale=uniform())  # copy by default
     assert edited is not model and torch.equal(model[0].weight, W0)  # original untouched
-    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * we["0"]).double(), atol=1e-5)
+    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * proj).double(), atol=1e-5)
 
-    same = editor.apply(we, alpha=1.0, inplace=True)  # edits self.model
+    same = editor.apply(engram, alpha=1.0, scale=uniform(), inplace=True)  # edits self.model
     assert same is model
-    assert torch.allclose(model[0].weight.double(), (W0 - we["0"]).double(), atol=1e-5)
+    assert torch.allclose(model[0].weight.double(), (W0 - proj).double(), atol=1e-5)
 
 
 # T14: apply also subtracts the bias engram for bias-bearing layers.
@@ -402,37 +442,161 @@ def test_apply_with_bias():
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(4, 3)).eval()  # bias=True
     W0, b0 = model[0].weight.detach().clone(), model[0].bias.detach().clone()
-    we, be = {"0": torch.randn(3, 4)}, {"0": torch.randn(3)}
-    edited = EngramEditor(model, cpu_cfg()).apply(we, be, alpha=0.5)
-    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * we["0"]).double(), atol=1e-5)
-    assert torch.allclose(edited[0].bias.double(), (b0 - 0.5 * be["0"]).double(), atol=1e-5)
+    proj, bproj = torch.randn(3, 4), torch.randn(3)
+    engram = EngramResult(layers={"0": _info("0", proj, weight=W0)}, bias={"0": bproj})
+    edited = EngramEditor(model, cpu_cfg()).apply(engram, alpha=0.5, scale=uniform())
+    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * proj).double(), atol=1e-5)
+    assert torch.allclose(edited[0].bias.double(), (b0 - 0.5 * bproj).double(), atol=1e-5)
 
 
-# T15: adaptive scaling — s_l = alpha*(rel_l/max rel)^p, rel_l = ||W_e||/||W||.
-def test_apply_adaptive_scales_by_relative_norm():
+# T15: weight_norm scaling — f_l = (rel_l/max rel)^p, rel_l = ||P||/||W||.
+def test_apply_weight_norm_scales_by_relative_norm():
     torch.manual_seed(0)
     model = _TinyStack(n=2, d=4).eval()
     mods = dict(model.named_modules())
-    we = {"layers.0.down_proj": torch.full((4, 4), 0.5), "layers.1.down_proj": torch.full((4, 4), 0.01)}
-    W0 = {ln: mods[ln].weight.detach().clone() for ln in we}
-    edited = dict(EngramEditor(model, cpu_cfg()).apply(we, alpha=1.0, scaling="adaptive", p=1.0).named_modules())
+    projs = {"layers.0.down_proj": torch.full((4, 4), 0.5), "layers.1.down_proj": torch.full((4, 4), 0.01)}
+    W0 = {ln: mods[ln].weight.detach().clone() for ln in projs}
+    engram = EngramResult(
+        layers={ln: _info(ln, projs[ln], weight=mods[ln].weight.detach()) for ln in projs}
+    )
+    edited = dict(
+        EngramEditor(model, cpu_cfg()).apply(engram, alpha=1.0, scale=weight_norm(1.0)).named_modules()
+    )
 
-    rel = {ln: we[ln].norm().item() / W0[ln].norm().item() for ln in we}
+    rel = {ln: projs[ln].norm().item() / W0[ln].norm().item() for ln in projs}
     top = max(rel, key=rel.get)
-    other = next(ln for ln in we if ln != top)
-    assert torch.allclose((W0[top] - edited[top].weight).double(), we[top].double(), atol=1e-5)  # max rel -> full alpha
+    other = next(ln for ln in projs if ln != top)
+    assert torch.allclose((W0[top] - edited[top].weight).double(), projs[top].double(), atol=1e-5)
     s = rel[other] / rel[top]
-    assert torch.allclose((W0[other] - edited[other].weight).double(), (s * we[other]).double(), atol=1e-5)
+    assert torch.allclose((W0[other] - edited[other].weight).double(), (s * projs[other]).double(), atol=1e-5)
 
 
-# T16: edit(target, total) == compute_engram_weights then apply.
+# T16: count_ratio scaling — the default; f_l = (n/N)^power, applied per layer.
+def test_apply_count_ratio_factor():
+    torch.manual_seed(0)
+    model = _TinyStack(n=2, d=4).eval()
+    mods = dict(model.named_modules())
+    projs = {"layers.0.down_proj": torch.randn(4, 4), "layers.1.down_proj": torch.randn(4, 4)}
+    W0 = {ln: mods[ln].weight.detach().clone() for ln in projs}
+    engram = EngramResult(layers={
+        "layers.0.down_proj": _info("layers.0.down_proj", projs["layers.0.down_proj"], n=2, N=8),  # f=0.25
+        "layers.1.down_proj": _info("layers.1.down_proj", projs["layers.1.down_proj"], n=4, N=4),  # f=1.0
+    })
+    edited = dict(EngramEditor(model, cpu_cfg()).apply(engram, alpha=1.0).named_modules())  # default count_ratio(1)
+    assert torch.allclose((W0["layers.0.down_proj"] - edited["layers.0.down_proj"].weight),
+                          0.25 * projs["layers.0.down_proj"], atol=1e-6)
+    assert torch.allclose((W0["layers.1.down_proj"] - edited["layers.1.down_proj"].weight),
+                          projs["layers.1.down_proj"], atol=1e-6)
+
+
+# T17: edit(target, total) == compute_engram_weights then apply (same default scale).
 def test_edit_equals_compute_then_apply():
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(6, 3, bias=False)).eval()
     loader = DataLoader(TensorDataset(torch.randn(64, 6)), batch_size=16)
     editor = EngramEditor(model, cpu_cfg())
     cov = editor.collect_statistics(loader)
-    we, _ = editor.compute_engram_weights(cov, cov)
-    manual = editor.apply(we, alpha=0.6)
+    manual = editor.apply(editor.compute_engram_weights(cov, cov), alpha=0.6)
     direct = editor.edit(cov, cov, alpha=0.6)
     assert torch.allclose(direct[0].weight, manual[0].weight, atol=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# T18: EQUIVALENCE (critical) — the mean+count path with the default count_ratio(1)
+# reproduces the legacy summed-covariance engram W . Sigma_t . pinv(Sigma_total)
+# **at the same float32 precision** (so only the mean-vs-sum reformulation is tested).
+# --------------------------------------------------------------------------- #
+def test_mean_path_reproduces_legacy_sum_engram():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(6, 4, bias=False)).eval()
+    ed = EngramEditor(model, cpu_cfg())
+    # different target/total data -> n != N and a non-trivial engram (well-conditioned)
+    target = ed.collect_statistics(DataLoader(TensorDataset(torch.randn(40, 6)), batch_size=8))
+    total = ed.collect_statistics(DataLoader(TensorDataset(torch.randn(120, 6)), batch_size=8))
+
+    # legacy reference: reconstruct the SUMS (mean * count) and solve in float32
+    W = model[0].weight.detach().float()
+    sigma_t = (target["0"] * target.count["0"]).float()
+    sigma_a = (total["0"] * total.count["0"]).float()
+    legacy = W @ sigma_t @ torch.linalg.pinv(sigma_a)
+
+    # new path: projection P, scaled by the default count_ratio(1) factor n/N
+    info = ed.compute_engram_weights(target, total).layers["0"]
+    new_engram = (info.n / info.N) * info.projection
+    assert info.n == 40 and info.N == 120
+    assert torch.allclose(new_engram, legacy, atol=1e-4, rtol=1e-3)
+
+
+# --------------------------------------------------------------------------- #
+# T19: scaling-function unit tests (count_ratio guard, uniform, effective_rank, compose).
+# --------------------------------------------------------------------------- #
+def test_scaling_functions():
+    eye = torch.eye(2)
+    infos = {
+        "a": _info("a", torch.ones(2, 2), n=2, N=8),   # n/N = 0.25
+        "b": _info("b", torch.ones(2, 2), n=4, N=4),   # n/N = 1.0
+        "z": _info("z", torch.ones(2, 2), n=0, N=4),   # guard: no target token -> 0
+    }
+    cr = count_ratio(1.0)(infos)
+    assert cr["a"] == pytest.approx(0.25) and cr["b"] == pytest.approx(1.0) and cr["z"] == 0.0
+    assert count_ratio(2.0)(infos)["a"] == pytest.approx(0.0625)
+
+    u = uniform()(infos)
+    assert all(v == 1.0 for v in u.values())
+
+    # compose multiplies per layer; uniform is the identity factor
+    comp = compose(count_ratio(1.0), uniform())(infos)
+    assert comp == pytest.approx(cr)
+
+    # effective_rank: full-rank C -> er=2, rank-1 C -> er=1, normalized by the max
+    er_infos = {
+        "full": LayerScaleInfo("full", torch.ones(2, 2), torch.ones(2, 2), 1, 1, torch.eye(2)),
+        "rank1": LayerScaleInfo("rank1", torch.ones(2, 2), torch.ones(2, 2), 1, 1,
+                                torch.tensor([[1.0, 0.0], [0.0, 0.0]])),
+    }
+    er = effective_rank(1.0)(er_infos)
+    assert er["full"] == pytest.approx(1.0, abs=1e-4)
+    assert er["rank1"] == pytest.approx(0.5, abs=1e-4)
+
+
+# --------------------------------------------------------------------------- #
+# T20: Statistics container — count-weighted merge, save/load round-trip, and a
+# clear error when loading the legacy (untagged) raw-covariance format.
+# --------------------------------------------------------------------------- #
+def test_statistics_merge_is_count_weighted():
+    s1 = Statistics({"a": torch.ones(2, 2) * 2.0}, {"a": 3})
+    s2 = Statistics({"a": torch.ones(2, 2) * 6.0}, {"a": 1})
+    m = Statistics.merge(s1, s2)
+    assert m.count["a"] == 4
+    assert torch.allclose(m["a"], torch.ones(2, 2) * 3.0)  # (3*2 + 1*6) / 4 = 3
+
+    # a key present in only one input keeps its own (count, mean)
+    s3 = Statistics({"b": torch.ones(2, 2)}, {"b": 5})
+    m2 = Statistics.merge(s1, s3)
+    assert m2.count == {"a": 3, "b": 5}
+
+
+def test_statistics_save_load_roundtrip_and_rejects_legacy(tmp_path):
+    s = Statistics({"x": torch.randn(3, 3)}, {"x": 7})
+    p = tmp_path / "stats.pt"
+    s.save(p)
+    loaded = Statistics.load(p)
+    assert loaded.count == {"x": 7}
+    assert torch.allclose(loaded["x"], s["x"])
+
+    legacy = tmp_path / "legacy.pt"
+    torch.save({"0": torch.randn(3, 3)}, legacy)  # old sum-only dict, no format tag
+    with pytest.raises(ValueError, match="not a Statistics file"):
+        Statistics.load(legacy)
+
+
+def test_editor_save_load_statistics(tmp_path):
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 2, bias=False)).eval()
+    ed = EngramEditor(model, cpu_cfg())
+    cov = ed.collect_statistics(DataLoader(TensorDataset(torch.randn(16, 4)), batch_size=8))
+    p = tmp_path / "c.pt"
+    ed.save_statistics(cov, p)
+    loaded = ed.load_statistics(p)
+    assert set(loaded) == set(cov) and loaded.count == cov.count
+    assert torch.allclose(loaded["0"], cov["0"])

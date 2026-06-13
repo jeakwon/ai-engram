@@ -14,10 +14,11 @@ Opt-in::
     from engram import EngramEditor
     from engram.moe import FusedExpertAdapter
     editor = EngramEditor(model, adapters=[FusedExpertAdapter()])
-    # ... collect_statistics / compute_engram_weights as usual; per-expert engrams
-    #     come back keyed "<experts>.gate_up_proj.<e>" / ".down_proj.<e>".
-    from engram.moe import apply_engram_weights      # writes Parameter slices
-    apply_engram_weights(model, weight_engrams, alpha=0.6)
+    target = editor.collect_statistics(forget_loader, batch_fn=bf, mask_fn=mf)  # Statistics
+    total  = editor.collect_statistics(all_loader,    batch_fn=bf, mask_fn=mf)
+    edited = editor.edit(target, total, alpha=0.6)   # per-expert 3D-Parameter slices edited here
+    # per-expert engrams are keyed "<experts>.gate_up_proj.<e>" / ".down_proj.<e>".
+    # Low-level alternative for pre-computed deltas: engram.moe.apply_engram_weights(model, deltas, alpha).
 
 Scope — the dominant "standard fused" pattern (~35 arches: Mixtral, Qwen2/3/3.5-MoE,
 DeepSeek-V2/V3, GLM4-MoE, Ernie4.5-MoE, MiniMax, Mistral4, Jamba, OLMoE, Phi-MoE, …):
@@ -68,6 +69,18 @@ def _split_key(key: str) -> Optional[Tuple[str, str, int]]:
     return None
 
 
+def _accumulate_mean(
+    cov: Dict[str, torch.Tensor], counts: Dict[str, int], key: str,
+    batch_sum: torch.Tensor, k: int, store: Any,
+) -> None:
+    """Incremental running mean for one key (mirrors CovarianceCollector):
+    ``C := (N*C + batch_sum) / (N + k)`` — magnitude-bounded, exact running mean."""
+    n = counts[key]
+    c = cov[key]
+    c.add_((batch_sum.to(store) - k * c) / (n + k))
+    counts[key] = n + k
+
+
 class FusedExpertAdapter:
     """Collects per-expert input covariance for standard fused MoE experts (opt-in).
 
@@ -96,13 +109,10 @@ class FusedExpertAdapter:
             self._modules[name] = module
             E, two_inter, hidden = module.gate_up_proj.shape
             inter = two_inter // 2
-            for e in range(E):  # pre-allocate per-expert covariances (gate_up over hidden, down over inter)
-                collector.covariance_matrices[f"{name}.{GATE_UP}.{e}"] = torch.zeros(
-                    (hidden, hidden), device=store, dtype=torch.float32
-                )
-                collector.covariance_matrices[f"{name}.{DOWN}.{e}"] = torch.zeros(
-                    (inter, inter), device=store, dtype=torch.float32
-                )
+            for e in range(E):  # pre-allocate per-expert MEAN covariances + counts (gate_up over hidden, down over inter)
+                for key, d in ((f"{name}.{GATE_UP}.{e}", hidden), (f"{name}.{DOWN}.{e}", inter)):
+                    collector.covariance_matrices[key] = torch.zeros((d, d), device=store, dtype=torch.float32)
+                    collector.sample_counts[key] = 0
             self._handles.append(module.register_forward_pre_hook(self._make_hook(collector, name, module)))
 
     def detach(self) -> None:
@@ -112,6 +122,7 @@ class FusedExpertAdapter:
 
     def _make_hook(self, collector: Any, name: str, module: nn.Module):
         cov = collector.covariance_matrices
+        counts = collector.sample_counts
         store = collector._storage_device
 
         def hook(mod: nn.Module, args: Tuple[Any, ...]) -> None:
@@ -132,10 +143,11 @@ class FusedExpertAdapter:
                 if not bool(sel.any()):
                     continue
                 x_e = x[sel]                                        # gate_up's input
-                cov[f"{name}.{GATE_UP}.{e}"].add_((x_e.mT @ x_e).to(store))
+                k = x_e.shape[0]
+                _accumulate_mean(cov, counts, f"{name}.{GATE_UP}.{e}", x_e.mT @ x_e, k, store)
                 gate, up = F.linear(x_e, gate_up[e]).chunk(2, dim=-1)
                 inter_e = module.act_fn(gate) * up                 # down's input (recomputed, exact)
-                cov[f"{name}.{DOWN}.{e}"].add_((inter_e.mT @ inter_e).to(store))
+                _accumulate_mean(cov, counts, f"{name}.{DOWN}.{e}", inter_e.mT @ inter_e, k, store)
 
         return hook
 
@@ -165,10 +177,13 @@ class FusedExpertAdapter:
 
 
 def apply_engram_weights(model: nn.Module, weight_engrams: Dict[str, torch.Tensor], alpha: float = 1.0) -> None:
-    """Subtract ``alpha * engram`` from each weight, handling fused-expert slice keys.
+    """Low-level: subtract ``alpha * weight_engrams[key]`` from each weight, handling fused keys.
 
-    Real-module keys edit ``module.weight``; fused-expert keys
-    (``"<experts>.gate_up_proj.<e>"``) edit ``param.data[e]`` of the 3D Parameter.
+    ``weight_engrams`` is a plain ``{key: delta}`` of **final** per-key tensors (already
+    scaled by any per-layer factor). Real-module keys edit ``module.weight``; fused-expert
+    keys (``"<experts>.gate_up_proj.<e>"``) edit ``param.data[e]`` of the 3D Parameter. The
+    primary path is :meth:`EngramEditor.apply`, which dispatches fused keys here via the
+    adapter and applies the pluggable scaling for you; use this only when you hold raw deltas.
     """
     modules = dict(model.named_modules())
     with torch.no_grad():

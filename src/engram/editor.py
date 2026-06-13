@@ -1,9 +1,12 @@
-"""EngramEditor: collect input covariances and extract engram weights.
+"""EngramEditor: collect input covariances, extract engram projections, apply edits.
 
-Milestone 1 scope: covariance collection and the closed-form engram weight
-    ``W_engram = W . Sigma_target . pinv(Sigma_total)``
-per layer (with optional bias absorption). Applying the edit
-(``W -= alpha * W_engram``) is intentionally not included yet.
+Pipeline: :meth:`~EngramEditor.collect_statistics` (mean input covariance + counts) ->
+:meth:`~EngramEditor.compute_engram_weights` (per-layer projection
+``P = W . C_target . pinv(C_total)``, bias-absorbed when applicable) ->
+:meth:`~EngramEditor.apply` / :meth:`~EngramEditor.edit`
+(``W <- W - alpha * f_l * P_l`` with a pluggable per-layer scaling function ``f_l``).
+The paper's ``n / N`` sample-count factor is the default scaling
+(:func:`engram.scaling.count_ratio`), applied at edit time so it can be swapped freely.
 """
 
 from __future__ import annotations
@@ -21,10 +24,10 @@ from tqdm.auto import tqdm
 from .collectors import CovarianceCollector
 from .config import EditorConfig
 from .handlers import Conv1DHandler, LinearHandler, get_conv1d_class, handler_for
+from .scaling import EngramResult, LayerScaleInfo, ScaleFn, count_ratio
+from .stats import Statistics
 
 logger = logging.getLogger("engram")
-
-Stats = Dict[str, torch.Tensor]
 
 
 class EngramEditor:
@@ -38,12 +41,12 @@ class EngramEditor:
     Example::
 
         editor = EngramEditor(model, EditorConfig())
-        target_cov = editor.collect_statistics(forget_loader, batch_fn=bf)
-        total_cov = editor.collect_statistics(all_loader, batch_fn=bf)
-        weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
-        # weight_engrams[name] has the same shape as the layer's .weight;
-        # bias_engrams[name] (if the layer has a bias and absorb_bias is on)
-        # has the same shape as the layer's .bias.
+        target = editor.collect_statistics(forget_loader, batch_fn=bf)   # Statistics
+        total = editor.collect_statistics(all_loader, batch_fn=bf)
+        edited = editor.edit(target, total, alpha=1.0)                   # paper edit (count_ratio)
+        # or, to reuse / re-scale the projection without recollecting:
+        #   engram = editor.compute_engram_weights(target, total)        # EngramResult
+        #   edited = editor.apply(engram, alpha=0.6, scale=weight_norm(1.0))
     """
 
     def __init__(
@@ -106,8 +109,8 @@ class EngramEditor:
         layers_to_transform: Optional[Union[int, List[int]]] = None,
         layers_pattern: Optional[Union[str, List[str]]] = None,
         target_layers: Optional[List[str]] = None,
-    ) -> Stats:
-        """Accumulate input covariance ``sum(x^T x)`` for each supported layer.
+    ) -> Statistics:
+        """Accumulate the mean input covariance ``mean(x^T x)`` + counts per supported layer.
 
         Args:
             dataloader: iterable of batches.
@@ -133,9 +136,10 @@ class EngramEditor:
                 Applied to every layer type (``nn.Linear``, ``Conv1D``, …).
 
         Returns:
-            ``{layer_name: covariance[D, D]}`` on ``config.storage_device``.
-            ``D`` is the layer's input dim, or ``input dim + 1`` when bias
-            absorption applies (``config.absorb_bias`` and the layer has a bias).
+            A :class:`engram.stats.Statistics`: per-layer **mean** covariance ``[D, D]``
+            on ``config.storage_device`` plus the sample counts. ``D`` is the layer's
+            input dim, or ``input dim + 1`` when bias absorption applies
+            (``config.absorb_bias`` and the layer has a bias).
         """
         if target_layers is not None:
             if target_modules is None:
@@ -166,60 +170,63 @@ class EngramEditor:
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
                 self._forward(self._move_to_device(raw_inputs))
 
-        return collector.covariance_matrices
+        return Statistics(collector.covariance_matrices, collector.sample_counts)
 
     @staticmethod
-    def merge_statistics(*stats_dicts: Stats) -> Stats:
-        """Sum multiple covariance dicts layer-wise (used to build totals)."""
-        if not stats_dicts:
-            return {}
-        merged = {k: v.clone() for k, v in stats_dicts[0].items()}
-        for d in stats_dicts[1:]:
-            for k, v in d.items():
-                if k in merged:
-                    merged[k].add_(v)
-                else:
-                    merged[k] = v.clone()
-        return merged
+    def merge_statistics(*stats: Statistics) -> Statistics:
+        """Count-weighted merge of several :class:`Statistics` (used to build totals)."""
+        return Statistics.merge(*stats)
 
     @torch.no_grad()
     def compute_engram_weights(
         self,
-        target_covariances: Union[Stats, List[Stats]],
-        total_covariance: Stats,
-    ) -> Tuple[Stats, Stats]:
-        """Compute ``W_engram = W . Sigma_target . pinv(Sigma_total)`` per layer.
+        target_covariances: Union[Statistics, List[Statistics]],
+        total_covariance: Statistics,
+        *,
+        keep_covariance: bool = False,
+    ) -> EngramResult:
+        """Compute the per-layer engram projection ``P = W . C_target . pinv(C_total)``.
 
-        Whether a layer was bias-absorbed is inferred from the covariance size
-        (``D == in + 1``), so collection and computation stay consistent without
-        re-passing a flag.
+        ``C_*`` are the **mean** covariances from :meth:`collect_statistics`. ``P`` is the
+        *pure* projection — the paper's ``n / N`` sample-count factor is **not** folded in
+        here; it is applied at edit time by the scaling function (default
+        :func:`engram.scaling.count_ratio`), so the scaling can be swapped without
+        recomputing. Whether a layer was bias-absorbed is inferred from the covariance
+        size (``D == in + 1``), kept consistent with collection without re-passing a flag.
 
         Args:
-            target_covariances: covariance of the data to isolate (the
-                "forget"/target set). A single dict, or a list of dicts that are
-                summed first via :meth:`merge_statistics`.
-            total_covariance: covariance of the total/reference set.
+            target_covariances: statistics of the data to isolate (the "forget"/target
+                set). A single :class:`Statistics`, or a list merged first
+                (count-weighted) via :meth:`merge_statistics`.
+            total_covariance: statistics of the total/reference set.
+            keep_covariance: keep a reference to each layer's total covariance in the
+                result (needed only by :func:`engram.scaling.effective_rank`). Default
+                ``False`` — covariances are not retained, so they can be freed.
 
         Returns:
-            ``(weight_engrams, bias_engrams)``. ``weight_engrams[name]`` matches
-            the layer's ``weight`` shape; ``bias_engrams[name]`` matches the
-            ``bias`` shape and is present only for bias-absorbed layers
-            (``bias_engrams`` is empty for bias-free models).
+            An :class:`engram.scaling.EngramResult`: ``layers[name]`` holds the projection
+            plus the per-layer scale inputs (counts ``n``/``N``, weight, total covariance);
+            ``bias[name]`` holds the bias projection for bias-absorbed layers.
         """
         if isinstance(target_covariances, list):
             target_covariances = self.merge_statistics(*target_covariances)
 
-        weight_engrams: Stats = {}
-        bias_engrams: Stats = {}
+        result = EngramResult()
         modules = dict(self.model.named_modules())
+        dev = self._model_device  # float32 throughout — float64's pinv is catastrophic on
+        prec = torch.float32      # ill-conditioned C_total (see CovarianceCollector).
 
-        for layer_name, pos_cov in tqdm(
-            target_covariances.items(),
-            disable=None,
-            desc="Computing engram",
+        for layer_name, c_target in tqdm(
+            target_covariances.items(), disable=None, desc="Computing engram"
         ):
             if layer_name not in total_covariance:
                 continue
+            c_target = c_target.to(dev, dtype=prec)
+            c_total = total_covariance[layer_name].to(dev, dtype=prec)
+            n = int(target_covariances.count.get(layer_name, 0))
+            N = int(total_covariance.count.get(layer_name, 0))
+            pinv_total = torch.linalg.pinv(c_total)
+            kept = c_total if keep_covariance else None  # only effective_rank needs it; else freed
 
             module = modules.get(layer_name)
             if module is None:
@@ -227,12 +234,11 @@ class EngramEditor:
                 adapter = next((a for a in self.adapters if a.owns(layer_name, self.model)), None)
                 if adapter is None:
                     continue
-                dev = self._model_device
-                w = adapter.weight_for(layer_name, self.model).to(dev, torch.float32)
-                weight_engrams[layer_name] = (
-                    w
-                    @ pos_cov.to(dev, torch.float32)
-                    @ torch.linalg.pinv(total_covariance[layer_name].to(dev, torch.float32))
+                w = adapter.weight_for(layer_name, self.model)  # [out, in] (a Parameter slice)
+                result.layers[layer_name] = LayerScaleInfo(
+                    name=layer_name, weight=w,
+                    projection=w.to(dev, dtype=prec) @ c_target @ pinv_total,
+                    n=n, N=N, total_cov=kept,
                 )
                 continue
 
@@ -240,115 +246,90 @@ class EngramEditor:
             if handler is None:
                 continue
 
-            # float32 throughout — see CovarianceCollector (float64's pinv is
-            # catastrophic on ill-conditioned Sigma_total).
-            dev, prec = self._model_device, torch.float32
-            sum_cov = total_covariance[layer_name].to(dev, dtype=prec)
-            pos_cov = pos_cov.to(dev, dtype=prec)
-
-            # The covariance is self-describing: D == in (+1 if bias was absorbed
-            # at collection time). Follow it.
             in_dim = handler.get_input_dim(module, absorb_bias=False)
-            absorbed = sum_cov.shape[0] == in_dim + 1 and getattr(module, "bias", None) is not None
-
-            weight = handler.weight_matrix(module, absorb_bias=absorbed).to(dev, dtype=prec)
-
-            engram = weight @ pos_cov @ torch.linalg.pinv(sum_cov)  # [out, D]
+            absorbed = c_total.shape[0] == in_dim + 1 and getattr(module, "bias", None) is not None
+            full = handler.weight_matrix(module, absorb_bias=absorbed).to(dev, dtype=prec) @ c_target @ pinv_total
 
             if absorbed:
-                weight_engrams[layer_name] = handler.to_weight_shape(engram[:, :in_dim], module)
-                bias_engrams[layer_name] = engram[:, in_dim:].reshape(-1)
+                proj = handler.to_weight_shape(full[:, :in_dim], module)
+                result.bias[layer_name] = full[:, in_dim:].reshape(-1)
             else:
-                weight_engrams[layer_name] = handler.to_weight_shape(engram, module)
+                proj = handler.to_weight_shape(full, module)
+            result.layers[layer_name] = LayerScaleInfo(
+                name=layer_name, weight=module.weight.detach(),  # reference (norms only); no f32 copy
+                projection=proj, n=n, N=N, total_cov=kept,
+            )
 
-        return weight_engrams, bias_engrams
-
-    def _weight_for(self, key: str, model: nn.Module, modules: Dict[str, nn.Module]) -> Optional[torch.Tensor]:
-        """The original ``[out, in]`` weight for a covariance key (module or adapter)."""
-        module = modules.get(key)
-        if module is not None:
-            return module.weight
-        adapter = next((a for a in self.adapters if a.owns(key, model)), None)
-        return adapter.weight_for(key, model) if adapter is not None else None
+        return result
 
     @torch.no_grad()
     def apply(
         self,
-        weight_engrams: Stats,
-        bias_engrams: Optional[Stats] = None,
+        engram: EngramResult,
         *,
         alpha: float = 1.0,
-        scaling: str = "uniform",
-        p: float = 1.0,
+        scale: Optional[ScaleFn] = None,
         inplace: bool = False,
     ) -> nn.Module:
-        """Subtract the engram from the model: ``W <- W - scale * W_engram``.
+        """Subtract the engram from the model: ``W <- W - alpha * f_l * P_l``.
 
         Args:
-            weight_engrams: per-layer engram weights from :meth:`compute_engram_weights`.
-            bias_engrams: optional per-layer bias engrams from :meth:`compute_engram_weights`.
-            alpha: edit strength (``1.0`` removes the full engram).
-            scaling: ``"uniform"`` (every layer scaled by ``alpha``) or ``"adaptive"``
-                (per-layer ``s_l = alpha * (rel_l / max rel) ** p`` with
-                ``rel_l = ||W_engram_l|| / ||W_l||`` — edits each layer in proportion
-                to how strongly the engram occupies it).
-            p: power for adaptive scaling.
-            inplace: edit ``self.model`` in place; otherwise edit and return a copy.
+            engram: result of :meth:`compute_engram_weights` (projections + scale inputs).
+            alpha: global edit strength (the paper's strength; ``1.0`` = full removal at
+                the default scaling).
+            scale: a scaling function ``{name: LayerScaleInfo} -> {name: float}`` giving the
+                per-layer factor ``f_l``. Defaults to :func:`engram.scaling.count_ratio`
+                (``f_l = n / N``), which reproduces the paper. See :mod:`engram.scaling`
+                for ``weight_norm`` / ``effective_rank`` / ``uniform`` / ``compose``.
+            inplace: edit ``self.model`` in place; otherwise edit and return a deep copy.
 
         Returns:
-            the edited model (a deep copy unless ``inplace``). Fused-expert keys are
-            written to their 3D-Parameter slices via the registered adapter.
+            the edited model. Fused-expert keys are written to their 3D-Parameter slices
+            via the registered adapter.
         """
+        if scale is None:
+            scale = count_ratio(1.0)
         model = self.model if inplace else copy.deepcopy(self.model)
         modules = dict(model.named_modules())
-        biases = bias_engrams or {}
+        factors = scale(engram.layers)
 
-        if scaling == "adaptive":
-            rel = {}
-            for key, w in weight_engrams.items():
-                base = self._weight_for(key, model, modules)
-                if base is not None:
-                    rel[key] = w.norm().item() / (base.norm().item() + 1e-8)
-            mx = max(rel.values()) if rel else 1.0
-            scale = {k: alpha * (rel.get(k, 0.0) / mx) ** p for k in weight_engrams}
-        elif scaling == "uniform":
-            scale = {k: alpha for k in weight_engrams}
-        else:
-            raise ValueError(f"scaling must be 'uniform' or 'adaptive', got {scaling!r}")
-
-        for key, w in weight_engrams.items():
-            s = scale[key]
-            module = modules.get(key)
-            if module is not None:
-                module.weight.data -= (s * w).to(module.weight.dtype)
-                b = biases.get(key)
-                if b is not None and getattr(module, "bias", None) is not None:
-                    module.bias.data -= (s * b).to(module.bias.dtype)
+        for name, info in engram.layers.items():
+            s = alpha * float(factors.get(name, 0.0))
+            if s == 0.0:
                 continue
-            adapter = next((a for a in self.adapters if a.owns(key, model)), None)
+            module = modules.get(name)
+            if module is not None:
+                module.weight.data -= (s * info.projection).to(module.weight.device, module.weight.dtype)
+                b = engram.bias.get(name)
+                if b is not None and getattr(module, "bias", None) is not None:
+                    module.bias.data -= (s * b).to(module.bias.device, module.bias.dtype)
+                continue
+            adapter = next((a for a in self.adapters if a.owns(name, model)), None)
             if adapter is not None:
-                adapter.apply_delta(model, key, s * w)
+                adapter.apply_delta(model, name, s * info.projection)
         return model
 
     def edit(
         self,
-        target_covariances: Union[Stats, List[Stats]],
-        total_covariance: Stats,
+        target_covariances: Union[Statistics, List[Statistics]],
+        total_covariance: Statistics,
         *,
         alpha: float = 1.0,
-        scaling: str = "uniform",
-        p: float = 1.0,
+        scale: Optional[ScaleFn] = None,
         inplace: bool = False,
+        keep_covariance: bool = False,
     ) -> nn.Module:
         """One call: :meth:`compute_engram_weights` then :meth:`apply`; returns the edited model."""
-        weight_engrams, bias_engrams = self.compute_engram_weights(target_covariances, total_covariance)
-        return self.apply(weight_engrams, bias_engrams, alpha=alpha, scaling=scaling, p=p, inplace=inplace)
+        engram = self.compute_engram_weights(
+            target_covariances, total_covariance, keep_covariance=keep_covariance
+        )
+        return self.apply(engram, alpha=alpha, scale=scale, inplace=inplace)
 
-    def save_statistics(self, stats: Stats, path: Union[str, Path]) -> None:
-        """Save a statistics dict with ``torch.save``."""
-        torch.save(stats, path)
+    def save_statistics(self, stats: Statistics, path: Union[str, Path]) -> None:
+        """Save collected :class:`Statistics` (mean covariances + counts) with ``torch.save``."""
+        stats.save(path)
         logger.info("Saved statistics to %s", path)
 
-    def load_statistics(self, path: Union[str, Path]) -> Stats:
-        """Load a statistics dict onto the storage device (the model's device by default)."""
-        return torch.load(path, map_location=self._storage_device, weights_only=True)
+    def load_statistics(self, path: Union[str, Path]) -> Statistics:
+        """Load :class:`Statistics` onto the storage device (the model's device by default)."""
+        return Statistics.load(path, map_location=self._storage_device)

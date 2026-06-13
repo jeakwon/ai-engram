@@ -1,12 +1,12 @@
 """TOFU unlearning integration test (heavy: GPU + cached HF model/dataset).
 
 Faithful to ``examples/llm_tofu.ipynb``: answer-token-masked covariance over the
-forget set and a 4000-sample total set, the closed-form engram weights from the
-package, applied (locally; ``apply`` is Milestone 2) in two paper conditions:
+forget set and a 4000-sample total set, the closed-form engram from the package
+(``compute_engram_weights`` -> ``apply``) in two paper conditions:
 
-  * plain (uniform):       W <- W - alpha * W_engram                  (alpha=0.6)
-  * adaptive (power-norm):  s_l = (rel_l / max rel)^p,  rel_l = ||W_engram_l|| / ||W_l||
-                            W <- W - alpha * s_l * W_engram           (alpha=1.0, p=1)
+  * plain    = scale=count_ratio(1.0):  W <- W - alpha*(n/N)*P                     (alpha=0.6)
+  * adaptive = scale=compose(count_ratio(1.0), weight_norm(p)):  also weighted by
+               ||P||/||W|| per layer                                              (alpha=1.0, p=1)
 
 Pass/fail criterion is *selective* unlearning via answer-token NLL: the forget
 set's NLL must rise substantially while the retain set is preserved, for both
@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
-from engram import EditorConfig, EngramEditor
+from engram import EditorConfig, EngramEditor, compose, count_ratio, weight_norm
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ENGRAM_RUN_TOFU") != "1",
@@ -106,32 +106,6 @@ def _mean_answer_nll(model, rows, tok, device, bs=16):
     return float(sum(vals) / len(vals))
 
 
-def _apply_plain(model, weight_engrams, bias_engrams, alpha):
-    """Uniform edit: W <- W - alpha * W_engram (+ bias)."""
-    edited = copy.deepcopy(model)
-    mods = dict(edited.named_modules())
-    with torch.no_grad():
-        for name, w in weight_engrams.items():
-            mods[name].weight.data -= (alpha * w).to(mods[name].weight.dtype)
-        for name, b in bias_engrams.items():
-            if getattr(mods[name], "bias", None) is not None:
-                mods[name].bias.data -= (alpha * b).to(mods[name].bias.dtype)
-    return edited.eval()
-
-
-def _apply_adaptive(model, weight_engrams, alpha, p):
-    """Power-norm edit: s_l = (rel_l / max rel)^p, rel_l = ||W_engram_l|| / ||W_l||."""
-    edited = copy.deepcopy(model)
-    mods = dict(edited.named_modules())
-    rel = {ln: w.norm().item() / (mods[ln].weight.norm().item() + 1e-8) for ln, w in weight_engrams.items()}
-    mx = max(rel.values())
-    with torch.no_grad():
-        for ln, w in weight_engrams.items():
-            s = (rel[ln] / mx) ** p * alpha
-            mods[ln].weight.data -= (s * w).to(mods[ln].weight.dtype)
-    return edited.eval()
-
-
 def _assert_selective(tag, f0, f1, r0, r1):
     assert math.isfinite(f1) and math.isfinite(r1), f"{tag}: non-finite loss"
     # strong forgetting: the memorized answers become much less likely
@@ -182,8 +156,8 @@ def test_tofu_forget10_plain_and_adaptive():
     mask_fn = lambda b: b["labels"] != IGNORE
     g_forget = editor.collect_statistics(covdl(forget), batch_fn=feats, mask_fn=mask_fn)
     g_total = editor.collect_statistics(covdl(total), batch_fn=feats, mask_fn=mask_fn)
-    weight_engrams, bias_engrams = editor.compute_engram_weights(g_forget, g_total)
-    assert len(weight_engrams) > 0
+    engram = editor.compute_engram_weights(g_forget, g_total)  # keep_covariance=False -> frees covs
+    assert len(engram.layers) > 0
     del g_forget, g_total
     torch.cuda.empty_cache()
 
@@ -191,15 +165,17 @@ def test_tofu_forget10_plain_and_adaptive():
     f0 = _mean_answer_nll(base, forget, tok, device)
     r0 = _mean_answer_nll(base, retain_eval, tok, device)
 
-    # --- plain ---
-    edited_p = _apply_plain(base, weight_engrams, bias_engrams, PLAIN_ALPHA)
+    # --- plain = count_ratio(1.0): W - alpha*(n/N)*P ---
+    edited_p = editor.apply(engram, alpha=PLAIN_ALPHA, scale=count_ratio(1.0)).eval()
     fp = _mean_answer_nll(edited_p, forget, tok, device)
     rp = _mean_answer_nll(edited_p, retain_eval, tok, device)
     del edited_p
     torch.cuda.empty_cache()
 
-    # --- adaptive ---
-    edited_a = _apply_adaptive(base, weight_engrams, ADAPT_ALPHA, ADAPT_P)
+    # --- adaptive = count_ratio(1.0) further weighted by ||P||/||W|| (compose) ---
+    edited_a = editor.apply(
+        engram, alpha=ADAPT_ALPHA, scale=compose(count_ratio(1.0), weight_norm(ADAPT_P))
+    ).eval()
     fa = _mean_answer_nll(edited_a, forget, tok, device)
     ra = _mean_answer_nll(edited_a, retain_eval, tok, device)
     del edited_a

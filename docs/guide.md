@@ -21,14 +21,27 @@ Subtracting `α·W_engram` removes that slice and leaves the rest intact.
 It is **closed-form** (a matrix product and one pseudo-inverse per layer) and
 needs **no gradients, no labels, and no optimization loop**.
 
+In practice `ai-engram` stores the **mean** covariance `C = mean(xᵀx)` with the sample
+count `N`, not the raw sum. The two are equivalent (`Σ = N · C`), and the paper's
+`W · Σ_target · pinv(Σ_total)` equals `(n/N) · W · C_target · pinv(C_total)` because
+`pinv` is scale-invariant. The factor `n/N` (the target/total sample-count ratio) is
+applied at edit time as the **default scaling** (see [Scaling](#scaling)), so it can be
+swapped for other per-layer weightings without recomputing.
+
 ## 1 — Collecting covariance
 
 `collect_statistics` registers a `forward_pre_hook` on every supported layer,
-flattens the layer input to `[N, D]`, and accumulates `xᵀx` in place:
+flattens the layer input to `[N, D]`, and updates a running **mean** of `xᵀx` in
+place, tracking the row count alongside:
 
 ```python
-cov[name] += x.mT @ x      # D×D, on config.storage_device
+# incremental mean (magnitude-bounded regardless of corpus size); k = rows this batch
+cov[name]   += (x.mT @ x - k * cov[name]) / (count[name] + k)   # D×D, on config.storage_device
+count[name] += k
 ```
+
+It returns a [`Statistics`](api.md) — `{cov, count}` — whose `merge` is a count-weighted
+average, so a total built from pieces (or across runs) is exact.
 
 - **Forward-only.** No backward pass is ever run; collection happens under
   `torch.inference_mode()`.
@@ -87,18 +100,20 @@ be built from *its* tokens. How that is handled depends on the model's MoE layou
 
     ```python
     from engram import EngramEditor
-    from engram.moe import FusedExpertAdapter, apply_engram_weights
+    from engram.moe import FusedExpertAdapter
 
     editor = EngramEditor(model, adapters=[FusedExpertAdapter()])
     target = editor.collect_statistics(forget_loader, batch_fn=bf, mask_fn=mf)
     total  = editor.collect_statistics(total_loader,  batch_fn=bf, mask_fn=mf)
-    weight_engrams, _ = editor.compute_engram_weights(target, total)  # + "<experts>.gate_up_proj.<e>" keys
-    apply_engram_weights(model, weight_engrams, alpha=0.6)            # edits the 3D Parameter slices
+    edited = editor.edit(target, total, alpha=0.6)   # edits the 3D Parameter slices in a copy
     ```
 
-    All MoE-specific logic lives in `engram.moe`; without the adapter the core is
-    MoE-unaware. Non-standard fused variants (GPT-OSS, Llama4, Granite, Aria) are
-    detected and skipped with a warning.
+    Per-expert engrams are keyed `"<experts>.gate_up_proj.<e>"` / `".down_proj.<e>"`,
+    and each expert tracks its own routed `n_e/N_e`, so `count_ratio` weights experts by
+    how target-concentrated their tokens are (see [Scaling](#scaling)). All MoE-specific
+    logic lives in `engram.moe`; without the adapter the core is MoE-unaware. Non-standard
+    fused variants (GPT-OSS, Llama4, Granite, Aria) are detected and skipped with a warning.
+    (For pre-computed deltas there is a low-level `engram.moe.apply_engram_weights`.)
 
 ### Selective layers (LoRA convention)
 
@@ -124,21 +139,55 @@ editor.collect_statistics(loader, target_modules=["down_proj"],
 
 ## 2 — Computing the engram
 
-`compute_engram_weights(target_cov, total_cov)` returns
-`(weight_engrams, bias_engrams)`. Per layer:
+`compute_engram_weights(target, total)` returns an `EngramResult` of per-layer
+**projections** — the engram before any sample-count factor. Per layer:
 
 ```python
-W      = handler.weight_matrix(module)        # canonical [out, in]
-engram = W @ Σ_target @ pinv(Σ_total)         # closed form, one pinv per layer
+W = handler.weight_matrix(module)        # canonical [out, in]
+P = W @ C_target @ pinv(C_total)         # closed form, one pinv per layer (mean covariances)
 ```
 
 - **Pseudo-inverse.** `torch.linalg.pinv` (SVD with rcond thresholding) handles
-  rank-deficient `Σ_total` directly — small singular values are cut, not inverted.
-- The result is returned in `module.weight`'s shape; apply it with
-  `editor.apply(weight_engrams, bias_engrams, alpha=…, scaling="uniform"|"adaptive")`
-  (or `editor.edit(target, total, …)` to compute + apply in one call).
-- A list of target dicts is summed first (`merge_statistics`), so you can pass
-  per-class covariances.
+  rank-deficient `C_total` directly — small singular values are cut, not inverted.
+- `P` is returned in `module.weight`'s shape as `result.layers[name].projection`,
+  with the inputs a scaling function needs (`n`, `N`, the weight). Apply it with
+  `editor.apply(result, alpha=…, scale=…)`, or `editor.edit(target, total, …)` to
+  compute + apply in one call.
+- A list of target `Statistics` is merged first (count-weighted `merge_statistics`),
+  so you can pass per-class statistics.
+
+## Scaling
+
+The edit subtracts, per layer `l`, `alpha · f_l · P_l`, where `P_l` is the projection
+and `f_l` comes from a **scaling function** passed as `scale=`. `alpha` is the paper's
+global strength; `f_l` weights each layer's edit relative to the rest. The paper folds a
+`n/N` factor into the closed form implicitly (inside the summed covariances); `ai-engram`
+makes it explicit and pluggable:
+
+| `scale=` | `f_l` | notes |
+|---|---|---|
+| `count_ratio(p)` | `(nₗ/Nₗ)ᵖ` | **default** (`p=1` ⇒ the paper); target/total sample-count ratio |
+| `weight_norm(p)` | `(relₗ / max rel)ᵖ`, `relₗ = ‖Pₗ‖/‖Wₗ‖` | edits layers by how strongly the engram occupies them |
+| `effective_rank(p)` | `(erₗ / max er)ᵖ` | by the effective rank of `C_total` (needs `compute_engram_weights(..., keep_covariance=True)`) |
+| `uniform()` | `1` | subtract the bare projection |
+| `compose(a, b, …)` | `∏ fᵢ` | multiply several together |
+
+```python
+from engram import count_ratio, weight_norm, effective_rank, uniform, compose
+edited = editor.apply(engram, alpha=1.0, scale=weight_norm(1.0))
+edited = editor.apply(engram, alpha=1.0, scale=compose(count_ratio(1.0), weight_norm(1.0)))
+```
+
+A scaling function takes the whole `{name: LayerScaleInfo}` dict and returns
+`{name: float}`, so it can normalize globally; write your own for custom weightings.
+
+!!! note "Dense vs MoE — what `count_ratio` actually buys"
+    In a **dense** model every token passes through every layer, so `n/N` is the *same
+    constant* for all layers — `count_ratio` is then a global rescale that folds into
+    `alpha`, and genuine per-layer structure comes from `weight_norm` / `effective_rank`.
+    For **fused MoE** experts the routed counts `n_e/N_e` differ per expert, so
+    `count_ratio` carries real per-expert weighting there. (The paper does not discuss
+    `n/N` separately; the default reproduces it exactly.)
 
 ## Bias absorption
 
@@ -148,13 +197,13 @@ exactly linear:
 ```
 x̃ = [x ; 1]            (dim in+1)
 W̃ = [W | b]            ([out, in+1])      ⇒   y = W̃ x̃
-Σ̃ = Σ x̃ x̃ᵀ            ((in+1)×(in+1), captures the input mean and count)
-W̃_engram = W̃ · Σ̃_target · pinv(Σ̃_total)        → split into  W_engram, b_engram
+C̃ = mean(x̃ x̃ᵀ)        ((in+1)×(in+1); the extra row/col captures the input mean)
+P̃ = W̃ · C̃_target · pinv(C̃_total)               → split into  W projection, b projection
 ```
 
 With `absorb_bias=True` (default, **automatic**), bias-bearing layers are handled
 this way; the covariance for those layers is `(in+1)×(in+1)` and
-`compute_engram_weights` returns a matching `bias_engrams[name]`. Bias-free layers
+`compute_engram_weights` returns a matching `result.bias[name]`. Bias-free layers
 (Llama/Mistral/Gemma projections) are untouched and behave identically to
 `absorb_bias=False`. Set `absorb_bias=False` to edit `W` only.
 

@@ -20,8 +20,9 @@ W_engram = W · Σ_target · pinv(Σ_total)
 - **Forward-only** — covariances via forward pre-hooks; no backprop.
 - **HF-native** — Llama, Mistral, Qwen, Gemma, Phi … and GPT-2 (`Conv1D`) out of the box.
 - **Affine-correct** — automatic bias absorption for bias-bearing layers.
+- **Tunable** — per-layer edit scaling is pluggable: the paper's `n/N` (default), relative weight-norm, effective rank, or your own.
 
-> **Milestone 1** (this release): statistics collection + engram **extraction**. Applying the edit, a one-call `edit_llm` helper, adaptive scaling, registries, and metrics come in later milestones — and the extraction already reproduces TOFU unlearning (see [Validation](#validation)).
+> Statistics collection, closed-form **extraction**, and **editing** (`apply` / `edit`) are all here, and reproduce TOFU unlearning (see [Validation](#validation)).
 
 ## Install
 
@@ -43,11 +44,11 @@ from engram import EngramEditor, EditorConfig
 
 editor = EngramEditor(model, EditorConfig())
 
-target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
-total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
+target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
+total  = editor.collect_statistics(total_loader)    # over the reference set
 
-weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
-# weight_engrams[name] matches the layer's .weight; bias_engrams[name] its .bias
+edited = editor.edit(target, total, alpha=1.0)      # compute the engram and subtract it
+# or split it: engram = editor.compute_engram_weights(target, total); editor.apply(engram, alpha=0.6)
 ```
 
 ### HuggingFace LLM (answer-token masked)
@@ -62,14 +63,11 @@ mask_fn  = lambda b: b["labels"] != -100           # covariance over answer toke
 
 g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
 g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
-weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)
 
-# apply — Milestone 2 will expose this as editor.edit(...)
-import copy
-edited = copy.deepcopy(model)
-mods = dict(edited.named_modules())
-for name, w in weight_engrams.items():
-    mods[name].weight.data -= (0.6 * w).to(mods[name].weight.dtype)
+edited = editor.edit(g_forget, g_total, alpha=0.6)   # default scaling = the paper's n/N
+# selective per-layer strength, e.g. by relative weight-norm:
+#   from engram import weight_norm, compose, count_ratio
+#   edited = editor.edit(g_forget, g_total, alpha=1.0, scale=compose(count_ratio(1.0), weight_norm(1.0)))
 ```
 
 Restrict the edit to specific modules with `target_modules` — the same convention
@@ -87,11 +85,11 @@ GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …).
 
 | step | what | cost |
 |---|---|---|
-| 1. collect | forward pre-hooks accumulate `Σ = Σ xᵀx` per layer | one forward pass, no backward |
-| 2. compute | `W_engram = W · Σ_target · pinv(Σ_total)` | one pseudo-inverse per layer |
-| 3. apply *(M2)* | `W ← W − α·W_engram` | a single subtraction |
+| 1. collect | forward pre-hooks accumulate the **mean** `xᵀx` + sample count per layer | one forward pass, no backward |
+| 2. compute | projection `P = W · C_target · pinv(C_total)` | one pseudo-inverse per layer |
+| 3. apply | `W ← W − α · f_l · P` with a pluggable per-layer scaling `f_l` | a single subtraction |
 
-Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU split (covariances on `storage_device`), a `float32` solve cast back to the model dtype, and answer-token masking. Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
+Efficient by construction — forward-only hooks, magnitude-bounded running-mean accumulation, CPU/GPU split (covariances on `storage_device`), a `float32` solve cast back to the model dtype, and answer-token masking. The per-layer edit weighting `f_l` is pluggable (`count_ratio` default = the paper's `n/N`, `weight_norm`, `effective_rank`, …). Handles `nn.Linear`, GPT-2 `Conv1D` (a transposed linear), and masked variants; full details in the [Guide](https://jeakwon.github.io/ai-engram/guide/).
 
 ### Configuration (`EditorConfig`)
 
@@ -116,8 +114,9 @@ Answer-token NLL confirms strong, *selective* forgetting — the forget set's NL
 
 ## API
 
-- `collect_statistics(loader, target_modules=None, batch_fn=None, mask_fn=None, layers_to_transform=None) -> {name: Σ}`
-- `compute_engram_weights(target_cov, total_cov) -> (weight_engrams, bias_engrams)`
+- `collect_statistics(loader, target_modules=None, batch_fn=None, mask_fn=None, layers_to_transform=None) -> Statistics`
+- `compute_engram_weights(target, total) -> EngramResult` · `apply(engram, *, alpha=1.0, scale=count_ratio(1.0)) -> Module` · `edit(target, total, *, alpha, scale)`
+- scaling functions: `count_ratio` · `weight_norm` · `effective_rank` · `uniform` · `compose`
 - `merge_statistics(*stats)` · `save_statistics(stats, path)` · `load_statistics(path)`
 
 Full reference (auto-generated from docstrings): **[API docs](https://jeakwon.github.io/ai-engram/api/)**.

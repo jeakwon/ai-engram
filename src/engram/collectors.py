@@ -1,8 +1,11 @@
 """Covariance collector.
 
-Registers forward pre-hooks that accumulate the input covariance ``sum(x^T x)``
-for each supported layer. Forward-only (no backward pass), in-place
-accumulation, with matrices held on ``config.storage_device``.
+Registers forward pre-hooks that accumulate the **mean** input covariance
+``mean(x^T x)`` plus a sample count for each supported layer. Forward-only (no
+backward pass), in-place incremental-mean update, with matrices held on
+``config.storage_device``. The mean keeps the magnitude bounded regardless of
+corpus size; the count is what lets the editor recover the paper's ``n / N``
+weighting (see :class:`engram.stats.Statistics`).
 
 A per-batch token mask (``mask_fn`` in ``EngramEditor.collect_statistics``)
 restricts the covariance to selected tokens for **every** layer type. MoE experts
@@ -65,7 +68,7 @@ def _layer_index_matches(
 
 
 class CovarianceCollector:
-    """Context manager accumulating per-layer input covariance ``sum(x^T x)``."""
+    """Context manager accumulating per-layer **mean** input covariance + sample count."""
 
     def __init__(
         self,
@@ -84,7 +87,8 @@ class CovarianceCollector:
         self.layers_to_transform = layers_to_transform
         self.layers_pattern = layers_pattern
         self.adapters = list(adapters or [])  # opt-in extensions (e.g. fused MoE experts)
-        self.covariance_matrices: Dict[str, torch.Tensor] = {}
+        self.covariance_matrices: Dict[str, torch.Tensor] = {}  # per-layer MEAN of x^T x
+        self.sample_counts: Dict[str, int] = {}                 # per-layer rows that entered the mean
         self.current_mask: Optional[torch.Tensor] = None
         # per-batch routing-alignment state (used only when a layer sees a subset)
         self._proj: Dict[int, torch.Tensor] = {}                       # H -> random fingerprint vector
@@ -170,6 +174,7 @@ class CovarianceCollector:
             self.covariance_matrices[name] = torch.zeros(
                 (dim, dim), device=self._storage_device, dtype=torch.float32
             )
+            self.sample_counts[name] = 0
 
             def make_hook(layer_name: str, layer_handler: LayerHandler, absorb_bias: bool):
                 def hook(mod: nn.Module, inputs: Any) -> None:
@@ -179,9 +184,15 @@ class CovarianceCollector:
                     sel = self._select(x)
                     if sel is not None:
                         x = x[sel]
-                    self.covariance_matrices[layer_name].add_(
-                        (x.mT @ x).to(self._storage_device)
-                    )
+                    k = x.shape[0]
+                    if k == 0:
+                        return
+                    # incremental mean: C := (N*C + sum(x^T x)) / (N + k), magnitude-bounded
+                    batch = (x.mT @ x).to(self._storage_device)
+                    n = self.sample_counts[layer_name]
+                    cov = self.covariance_matrices[layer_name]
+                    cov.add_((batch - k * cov) / (n + k))
+                    self.sample_counts[layer_name] = n + k
 
                 return hook
 

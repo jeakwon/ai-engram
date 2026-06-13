@@ -86,12 +86,12 @@ def test_architecture_compat(name: str, masked: bool):
     mask_fn = (lambda b: b["labels"] != -100) if masked else None
 
     cov = editor.collect_statistics([batch], batch_fn=_FEATS, mask_fn=mask_fn)
-    weights, _ = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
 
     assert cov, f"{name}: no layers were hooked"
     modules = dict(model.named_modules())
-    for n, w in weights.items():
-        assert w.shape == modules[n].weight.shape, f"{name}: {n} got {tuple(w.shape)}"
+    for n, info in result.layers.items():
+        assert info.projection.shape == modules[n].weight.shape, f"{name}: {n} got {tuple(info.projection.shape)}"
 
     # MoE: masking must reach the routed expert layers, not just attn/router —
     # but only when this transformers exposes experts as per-expert nn.Linear
