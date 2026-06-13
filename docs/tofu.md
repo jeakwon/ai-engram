@@ -5,7 +5,7 @@ is finetuned to memorize synthetic author biographies, then asked to *forget* a
 subset ("forget10" = 10%) while preserving the rest ("retain").
 
 !!! success "Reproduces the paper"
-    `ai-engram`'s engram extraction reproduces the official TOFU **forget10
+    `ai-engram`'s engram extraction reproduces the TOFU **forget10
     Overall** within ~0.01 — gold **0.998**, plain **0.706**, adaptive **0.817**
     (paper 0.998 / 0.698 / 0.818).
 
@@ -17,7 +17,7 @@ Two tests cover it (both gated and GPU-only):
 | test | gate | measures |
 |---|---|---|
 | `tests/test_tofu_unlearn.py` | `ENGRAM_RUN_TOFU=1` | answer-token NLL (fast proxy) |
-| `tests/test_tofu_official.py` | `ENGRAM_RUN_TOFU_OFFICIAL=1` | official 14-metric "Overall" |
+| `tests/test_tofu_evaluate.py` | `ENGRAM_RUN_TOFU_EVALUATE=1` | 14-metric "Overall" |
 
 ## Running
 
@@ -28,7 +28,7 @@ offline use). On a GPU node:
 ```bash
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1     # if running from cache
 ENGRAM_RUN_TOFU=1          pytest -s tests/test_tofu_unlearn.py     # ~6 min
-ENGRAM_RUN_TOFU_OFFICIAL=1 pytest -s tests/test_tofu_official.py    # ~30-45 min
+ENGRAM_RUN_TOFU_EVALUATE=1 pytest -s tests/test_tofu_evaluate.py    # ~30-45 min
 ```
 
 ## Selective unlearning (NLL proxy)
@@ -48,7 +48,7 @@ more than retain). **Adaptive-norm forgets more while preserving retain better**
 
 ## Official Overall
 
-`tests/test_tofu_official.py` computes the paper's composite **Overall** score
+`tests/test_tofu_evaluate.py` computes the paper's composite **Overall** score
 (14 metrics — exact-memorization, extraction-strength, Q-A probability, ROUGE,
 truth-ratio, model-utility, gibberish, and 4 MIA attacks — rescaled against the
 finetuned base and the `retain90` gold model) for the engram edits and compares
@@ -70,4 +70,4 @@ The two edit conditions:
   `rel_l = ‖W_engram_l‖ / ‖W_l‖`
 
 The eval pipeline is ported verbatim from the example notebook
-(`tests/_tofu_official_eval.py`).
+(`tests/_tofu_evaluate.py`).

@@ -51,5 +51,5 @@ transformers ≥5 fused-expert layout — is supported.
 
 Initial public release: closed-form, forward-only covariance-based engram
 extraction (`collect_statistics` → `compute_engram_weights`) with automatic bias
-absorption and GPT-2 `Conv1D` support. Reproduces the TOFU forget10 official
-Overall within ~0.01 of the paper.
+absorption and GPT-2 `Conv1D` support. Reproduces the TOFU forget10 Overall
+within ~0.01 of the paper.
