@@ -270,6 +270,10 @@ def test_mask_fn_moe_mixtral():
             num_local_experts=4, num_experts_per_tok=2,
         )
     ).eval()
+    # transformers >=5 fuses Mixtral experts into Parameters (no per-expert
+    # nn.Linear); this test targets the per-expert .w1 layout — skip otherwise.
+    if not any(isinstance(mod, nn.Linear) and n.endswith(".w1") for n, mod in m.named_modules()):
+        pytest.skip("no per-expert .w1 nn.Linear (this transformers fuses MoE experts)")
     ed = EngramEditor(m, cpu_cfg(absorb_bias=False))
     ids = torch.randint(0, 64, (2, 8))
     lab = torch.full((2, 8), -100)
