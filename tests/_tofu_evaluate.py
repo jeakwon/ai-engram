@@ -1,9 +1,9 @@
-"""Official TOFU evaluation (14 metrics + Overall), ported VERBATIM from
+"""TOFU evaluation (14 metrics + Overall), ported VERBATIM from
 examples/llm_tofu.ipynb (itself ported from open-unlearning).
 
-Not a pytest test module (no test_ prefix) — imported by test_tofu_official.py.
+Not a pytest test module (no test_ prefix) — imported by test_tofu_evaluate.py.
 Exposes: QADataset, Collator, TEMPLATE, GEN_ARGS, IGNORE_INDEX,
-compute_full_tofu(model, tok, D), official_scores(exp, retain, ft).
+compute_full_tofu(model, tok, D), evaluate_scores(exp, retain, ft).
 """
 
 # ===== standalone TOFU evaluation (ported verbatim from open-unlearning) =====
@@ -254,7 +254,7 @@ def forget_quality(model_tr, retain_tr):
     from scipy.stats import ks_2samp
     return float(ks_2samp(model_tr, retain_tr).pvalue)
 
-# ---------- full official TOFU summary (all 14 metrics + per-index for rescaling) ----------
+# ---------- full TOFU summary (all 14 metrics + per-index for rescaling) ----------
 def compute_full_tofu(model, tok, D, bs=16):
     """D = {'fp':forget_perturbed,'ho':holdout,'rp':retain_perturbed,'ra':real_authors,'wf':world_facts}"""
     cr, cl = Collator(tok, "right"), Collator(tok, "left")
@@ -280,8 +280,8 @@ def compute_full_tofu(model, tok, D, bs=16):
             "mia_min_k": mia["min_k"], "mia_min_k_plus_plus": mia["min_k++"],
             "_forget_tr": ftr, "_mia_fs": mia_fs}
 
-def official_scores(exp, retain, ft):
-    """00_official_analysis.ipynb / build_master_table.py rescaling -> Overall etc."""
+def evaluate_scores(exp, retain, ft):
+    """Rescale the experiment's metrics against the base + retain gold -> Overall etc."""
     import scipy.stats as st
     from scipy.stats import ks_2samp
     from sklearn.metrics import roc_auc_score

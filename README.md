@@ -102,7 +102,7 @@ Efficient by construction — forward-only hooks, in-place accumulation, CPU/GPU
 
 ## Validation
 
-On **TOFU forget10** with `tofu_Llama-3.2-1B-Instruct`, the engram extraction reproduces the paper's official 14-metric **Overall** within **~0.01**:
+On **TOFU forget10** with `tofu_Llama-3.2-1B-Instruct`, the engram extraction reproduces the paper's 14-metric **Overall** within **~0.01**:
 
 | condition | ai-engram | paper |
 |---|---|---|

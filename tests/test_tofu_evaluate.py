@@ -1,4 +1,4 @@
-"""Official TOFU "Overall" reproduction (very heavy: ~30-45 min, GPU).
+"""TOFU "Overall" evaluation (very heavy: ~30-45 min, GPU).
 
 Computes the paper's composite Overall score (14 metrics, rescaled against the
 finetuned base and the retain90 gold model) for the engram edits produced by the
@@ -8,10 +8,10 @@ to the paper targets:
     gold (retain90) ~ 0.998 | plain (a=0.6) ~ 0.698 | adaptive (a=1.0,p=1) ~ 0.818
 
 Eval pipeline is ported verbatim from examples/llm_tofu.ipynb (see
-tests/_tofu_official_eval.py). Gated behind ENGRAM_RUN_TOFU_OFFICIAL=1. Run via
+tests/_tofu_evaluate.py). Gated behind ENGRAM_RUN_TOFU_EVALUATE=1. Run via
 SLURM gpu partition (offline cache):
-    ENGRAM_RUN_TOFU_OFFICIAL=1 HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
-        pytest -s tests/test_tofu_official.py
+    ENGRAM_RUN_TOFU_EVALUATE=1 HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+        pytest -s tests/test_tofu_evaluate.py
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from torch.utils.data import DataLoader
 from engram import EditorConfig, EngramEditor, MaskedLinearHandler
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("ENGRAM_RUN_TOFU_OFFICIAL") != "1",
-    reason="very heavy official TOFU reproduction; set ENGRAM_RUN_TOFU_OFFICIAL=1 (GPU + cache)",
+    os.environ.get("ENGRAM_RUN_TOFU_EVALUATE") != "1",
+    reason="very heavy TOFU evaluation; set ENGRAM_RUN_TOFU_EVALUATE=1 (GPU + cache)",
 )
 
 BASE_ID = "open-unlearning/tofu_Llama-3.2-1B-Instruct_full"
@@ -65,14 +65,14 @@ def _apply_adaptive(model, weight_engrams, alpha, p):
     return em.eval()
 
 
-def test_tofu_official_overall():
+def test_tofu_evaluate_overall():
     pytest.importorskip("transformers")
     pytest.importorskip("datasets")
     pytest.importorskip("rouge_score")
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA GPU")
 
-    import _tofu_official_eval as T
+    import _tofu_evaluate as T
     from datasets import load_dataset
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -132,12 +132,12 @@ def test_tofu_official_overall():
 
     rt = T.compute_full_tofu(load(RETAIN_ID), tok, D)
 
-    o_gold = T.official_scores(rt, rt, ft)["Overall"]
-    o_plain = T.official_scores(exp_plain, rt, ft)["Overall"]
-    o_adapt = T.official_scores(exp_adapt, rt, ft)["Overall"]
+    o_gold = T.evaluate_scores(rt, rt, ft)["Overall"]
+    o_plain = T.evaluate_scores(exp_plain, rt, ft)["Overall"]
+    o_adapt = T.evaluate_scores(exp_adapt, rt, ft)["Overall"]
 
     print(
-        "\n[TOFU forget10 | official Overall]   ours      paper     |diff|"
+        "\n[TOFU forget10 | Overall]   ours      paper     |diff|"
         f"\n  gold (retain90)            : {o_gold:6.3f}   {PAPER['gold']:6.3f}   {abs(o_gold - PAPER['gold']):.3f}"
         f"\n  plain    (a={PLAIN_ALPHA})           : {o_plain:6.3f}   {PAPER['plain']:6.3f}   {abs(o_plain - PAPER['plain']):.3f}"
         f"\n  adaptive (a={ADAPT_ALPHA}, p={ADAPT_P})      : {o_adapt:6.3f}   {PAPER['adaptive']:6.3f}   {abs(o_adapt - PAPER['adaptive']):.3f}"
