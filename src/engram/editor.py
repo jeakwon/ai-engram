@@ -8,6 +8,7 @@ per layer (with optional bias absorption). Applying the edit
 
 from __future__ import annotations
 
+import copy
 import logging
 import warnings
 from pathlib import Path
@@ -223,7 +224,7 @@ class EngramEditor:
             module = modules.get(layer_name)
             if module is None:
                 # not a hooked module — an opt-in adapter (e.g. fused MoE experts) may own it
-                adapter = next((a for a in self.adapters if a.owns(layer_name)), None)
+                adapter = next((a for a in self.adapters if a.owns(layer_name, self.model)), None)
                 if adapter is None:
                     continue
                 dev = self._model_device
@@ -261,6 +262,86 @@ class EngramEditor:
                 weight_engrams[layer_name] = handler.to_weight_shape(engram, module)
 
         return weight_engrams, bias_engrams
+
+    def _weight_for(self, key: str, model: nn.Module, modules: Dict[str, nn.Module]) -> Optional[torch.Tensor]:
+        """The original ``[out, in]`` weight for a covariance key (module or adapter)."""
+        module = modules.get(key)
+        if module is not None:
+            return module.weight
+        adapter = next((a for a in self.adapters if a.owns(key, model)), None)
+        return adapter.weight_for(key, model) if adapter is not None else None
+
+    @torch.no_grad()
+    def apply(
+        self,
+        weight_engrams: Stats,
+        bias_engrams: Optional[Stats] = None,
+        *,
+        alpha: float = 1.0,
+        scaling: str = "uniform",
+        p: float = 1.0,
+        inplace: bool = False,
+    ) -> nn.Module:
+        """Subtract the engram from the model: ``W <- W - scale * W_engram``.
+
+        Args:
+            weight_engrams, bias_engrams: from :meth:`compute_engram_weights`.
+            alpha: edit strength (``1.0`` removes the full engram).
+            scaling: ``"uniform"`` (every layer scaled by ``alpha``) or ``"adaptive"``
+                (per-layer ``s_l = alpha * (rel_l / max rel) ** p`` with
+                ``rel_l = ||W_engram_l|| / ||W_l||`` — edits each layer in proportion
+                to how strongly the engram occupies it).
+            p: power for adaptive scaling.
+            inplace: edit ``self.model`` in place; otherwise edit and return a copy.
+
+        Returns:
+            the edited model (a deep copy unless ``inplace``). Fused-expert keys are
+            written to their 3D-Parameter slices via the registered adapter.
+        """
+        model = self.model if inplace else copy.deepcopy(self.model)
+        modules = dict(model.named_modules())
+        biases = bias_engrams or {}
+
+        if scaling == "adaptive":
+            rel = {}
+            for key, w in weight_engrams.items():
+                base = self._weight_for(key, model, modules)
+                if base is not None:
+                    rel[key] = w.norm().item() / (base.norm().item() + 1e-8)
+            mx = max(rel.values()) if rel else 1.0
+            scale = {k: alpha * (rel.get(k, 0.0) / mx) ** p for k in weight_engrams}
+        elif scaling == "uniform":
+            scale = {k: alpha for k in weight_engrams}
+        else:
+            raise ValueError(f"scaling must be 'uniform' or 'adaptive', got {scaling!r}")
+
+        for key, w in weight_engrams.items():
+            s = scale[key]
+            module = modules.get(key)
+            if module is not None:
+                module.weight.data -= (s * w).to(module.weight.dtype)
+                b = biases.get(key)
+                if b is not None and getattr(module, "bias", None) is not None:
+                    module.bias.data -= (s * b).to(module.bias.dtype)
+                continue
+            adapter = next((a for a in self.adapters if a.owns(key, model)), None)
+            if adapter is not None:
+                adapter.apply_delta(model, key, s * w)
+        return model
+
+    def edit(
+        self,
+        target_covariances: Union[Stats, List[Stats]],
+        total_covariance: Stats,
+        *,
+        alpha: float = 1.0,
+        scaling: str = "uniform",
+        p: float = 1.0,
+        inplace: bool = False,
+    ) -> nn.Module:
+        """One call: :meth:`compute_engram_weights` then :meth:`apply`; returns the edited model."""
+        weight_engrams, bias_engrams = self.compute_engram_weights(target_covariances, total_covariance)
+        return self.apply(weight_engrams, bias_engrams, alpha=alpha, scaling=scaling, p=p, inplace=inplace)
 
     def save_statistics(self, stats: Stats, path: Union[str, Path]) -> None:
         """Save a statistics dict with ``torch.save``."""

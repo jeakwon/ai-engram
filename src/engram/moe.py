@@ -139,15 +139,29 @@ class FusedExpertAdapter:
 
         return hook
 
-    # ---- compute: called by EngramEditor.compute_engram_weights for unknown keys ----
-    def owns(self, key: str) -> bool:
+    # ---- compute / apply: called by EngramEditor for keys it doesn't recognise as modules ----
+    def owns(self, key: str, model: nn.Module) -> bool:
+        """True if ``key`` names a fused-expert slice present on ``model``.
+
+        Stateless — resolved from ``model``, so it works whether or not a covariance
+        pass was run this session (e.g. applying engrams loaded from disk).
+        """
         split = _split_key(key)
-        return split is not None and split[0] in self._modules
+        if split is None:
+            return False
+        name, proj, e = split
+        mod = dict(model.named_modules()).get(name)
+        return mod is not None and _is_standard_fused(mod) and 0 <= e < getattr(mod, proj).shape[0]
 
     def weight_for(self, key: str, model: nn.Module) -> torch.Tensor:
         name, proj, e = _split_key(key)  # type: ignore[misc]
-        module = dict(model.named_modules())[name]
-        return getattr(module, proj)[e]  # already [out, in]
+        return getattr(dict(model.named_modules())[name], proj)[e]  # already [out, in]
+
+    def apply_delta(self, model: nn.Module, key: str, delta: torch.Tensor) -> None:
+        """Subtract ``delta`` from the expert's 3D-Parameter slice, in place."""
+        name, proj, e = _split_key(key)  # type: ignore[misc]
+        param = getattr(dict(model.named_modules())[name], proj)
+        param.data[e] -= delta.to(param.dtype)
 
 
 def apply_engram_weights(model: nn.Module, weight_engrams: Dict[str, torch.Tensor], alpha: float = 1.0) -> None:

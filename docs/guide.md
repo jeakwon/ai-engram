@@ -134,8 +134,9 @@ engram = W @ Σ_target @ pinv(Σ_total)         # closed form, one pinv per laye
 
 - **Pseudo-inverse.** `torch.linalg.pinv` (SVD with rcond thresholding) handles
   rank-deficient `Σ_total` directly — small singular values are cut, not inverted.
-- The result is returned in `module.weight`'s shape, so applying the edit is a
-  direct subtraction.
+- The result is returned in `module.weight`'s shape; apply it with
+  `editor.apply(weight_engrams, bias_engrams, alpha=…, scaling="uniform"|"adaptive")`
+  (or `editor.edit(target, total, …)` to compute + apply in one call).
 - A list of target dicts is summed first (`merge_statistics`), so you can pass
   per-class covariances.
 

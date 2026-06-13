@@ -376,3 +376,63 @@ def test_default_storage_follows_model_device():
         DataLoader(TensorDataset(torch.randn(32, 6)), batch_size=8)
     )
     assert cov["0"].device.type == "cpu"  # followed the (CPU) model, not pinned elsewhere
+
+
+# --------------------------------------------------------------------------- #
+# T13: apply (M2) — W <- W - alpha*W_engram; copy by default, inplace optional.
+# --------------------------------------------------------------------------- #
+def test_apply_uniform_copy_and_inplace():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 3, bias=False)).eval()
+    W0 = model[0].weight.detach().clone()
+    we = {"0": torch.randn(3, 4)}
+    editor = EngramEditor(model, cpu_cfg())
+
+    edited = editor.apply(we, alpha=0.5)  # copy by default
+    assert edited is not model and torch.equal(model[0].weight, W0)  # original untouched
+    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * we["0"]).double(), atol=1e-5)
+
+    same = editor.apply(we, alpha=1.0, inplace=True)  # edits self.model
+    assert same is model
+    assert torch.allclose(model[0].weight.double(), (W0 - we["0"]).double(), atol=1e-5)
+
+
+# T14: apply also subtracts the bias engram for bias-bearing layers.
+def test_apply_with_bias():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 3)).eval()  # bias=True
+    W0, b0 = model[0].weight.detach().clone(), model[0].bias.detach().clone()
+    we, be = {"0": torch.randn(3, 4)}, {"0": torch.randn(3)}
+    edited = EngramEditor(model, cpu_cfg()).apply(we, be, alpha=0.5)
+    assert torch.allclose(edited[0].weight.double(), (W0 - 0.5 * we["0"]).double(), atol=1e-5)
+    assert torch.allclose(edited[0].bias.double(), (b0 - 0.5 * be["0"]).double(), atol=1e-5)
+
+
+# T15: adaptive scaling — s_l = alpha*(rel_l/max rel)^p, rel_l = ||W_e||/||W||.
+def test_apply_adaptive_scales_by_relative_norm():
+    torch.manual_seed(0)
+    model = _TinyStack(n=2, d=4).eval()
+    mods = dict(model.named_modules())
+    we = {"layers.0.down_proj": torch.full((4, 4), 0.5), "layers.1.down_proj": torch.full((4, 4), 0.01)}
+    W0 = {ln: mods[ln].weight.detach().clone() for ln in we}
+    edited = dict(EngramEditor(model, cpu_cfg()).apply(we, alpha=1.0, scaling="adaptive", p=1.0).named_modules())
+
+    rel = {ln: we[ln].norm().item() / W0[ln].norm().item() for ln in we}
+    top = max(rel, key=rel.get)
+    other = next(ln for ln in we if ln != top)
+    assert torch.allclose((W0[top] - edited[top].weight).double(), we[top].double(), atol=1e-5)  # max rel -> full alpha
+    s = rel[other] / rel[top]
+    assert torch.allclose((W0[other] - edited[other].weight).double(), (s * we[other]).double(), atol=1e-5)
+
+
+# T16: edit(target, total) == compute_engram_weights then apply.
+def test_edit_equals_compute_then_apply():
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(6, 3, bias=False)).eval()
+    loader = DataLoader(TensorDataset(torch.randn(64, 6)), batch_size=16)
+    editor = EngramEditor(model, cpu_cfg())
+    cov = editor.collect_statistics(loader)
+    we, _ = editor.compute_engram_weights(cov, cov)
+    manual = editor.apply(we, alpha=0.6)
+    direct = editor.edit(cov, cov, alpha=0.6)
+    assert torch.allclose(direct[0].weight, manual[0].weight, atol=1e-6)

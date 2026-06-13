@@ -60,23 +60,23 @@ weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_c
 
 ## Applying the edit
 
-!!! note "Milestone 2 preview"
-    M1 stops at extraction. Applying the edit is the single subtraction below; M2
-    will expose it as `editor.edit(target_cov, total_cov, edit_strength=alpha)`.
+`editor.apply` subtracts the engram and returns the edited model:
 
 ```python
-import copy
-edited = copy.deepcopy(model)
-mods = dict(edited.named_modules())
-with torch.no_grad():
-    for name, w in weight_engrams.items():
-        mods[name].weight.data -= (alpha * w).to(mods[name].weight.dtype)
-    for name, b in bias_engrams.items():
-        mods[name].bias.data -= (alpha * b).to(mods[name].bias.dtype)
+edited = editor.apply(weight_engrams, bias_engrams, alpha=0.6)
+
+# or compute + apply in one call:
+edited = editor.edit(target_cov, total_cov, alpha=0.6, scaling="adaptive")
 ```
 
-`alpha` (the *edit strength*) controls how much is removed; `1.0` is full
-removal, smaller values are gentler.
+- **`alpha`** — edit strength; `1.0` removes the full engram, smaller is gentler.
+- **`scaling="uniform"`** (default) applies `alpha` to every layer; **`"adaptive"`**
+  scales each layer by `(‖W_engram‖/‖W‖)^p` — the paper's stronger, more *selective* edit.
+- **`inplace=False`** (default) returns a deep copy and leaves the original untouched;
+  `True` edits in place.
+- Fused MoE experts are handled automatically when the
+  [adapter](guide.md#mixture-of-experts) is enabled — the edit is written to the
+  3D-Parameter slices.
 
 ## Editing only some layers
 
