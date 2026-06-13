@@ -6,7 +6,7 @@ The public surface of the `engram` package, generated from the source docstrings
 from engram import (
     EditorConfig, EngramEditor,
     CovarianceCollector,
-    LayerHandler, LinearHandler, Conv1DHandler, MaskedLinearHandler,
+    LayerHandler, LinearHandler, Conv1DHandler,
 )
 ```
 
@@ -17,8 +17,6 @@ from engram import (
 ::: engram.LinearHandler
 
 ::: engram.Conv1DHandler
-
-::: engram.MaskedLinearHandler
 
 ::: engram.LayerHandler
 

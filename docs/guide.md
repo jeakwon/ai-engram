@@ -72,10 +72,6 @@ token rows before accumulation (and before the bias-absorption constant, so the
 bias term's count equals the number of selected tokens). For **MoE** models, see
 [Mixture-of-experts](#mixture-of-experts) below.
 
-!!! note "Legacy"
-    `MaskedLinearHandler` (`editor.registry[nn.Linear] = MaskedLinearHandler()`)
-    still works but is `nn.Linear`-only — prefer `mask_fn`.
-
 ### Mixture-of-experts
 
 Routing sends each token through only some experts, so an expert's covariance must
@@ -170,7 +166,6 @@ absorbed is inferred from the covariance size (`D == in + 1`), not re-passed.
 |---|---|---|
 | `nn.Linear` | `LinearHandler` | weight stored `[out, in]` |
 | HF `Conv1D` | `Conv1DHandler` | GPT-2 family; weight stored `[in, out]`, transposed internally and back |
-| masked linear | `MaskedLinearHandler` | covariance over selected tokens |
 
 `Conv1D` is registered automatically when `transformers` is importable. Modern
 decoder LLMs use `nn.Linear` for every projection; **GPT-2 / original-GPT are the

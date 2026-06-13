@@ -119,24 +119,3 @@ class Conv1DHandler(LayerHandler):
 
     def to_weight_shape(self, w: torch.Tensor, module: nn.Module) -> torch.Tensor:
         return w.t()
-
-
-class MaskedLinearHandler(LinearHandler):
-    """``nn.Linear`` handler that restricts covariance to selected tokens.
-
-    Set ``handler.current_mask`` (a boolean tensor with one entry per flattened
-    ``[N]`` row, e.g. ``labels != -100``) before each forward pass — typically
-    inside ``batch_fn`` — to accumulate covariance over answer tokens only. The
-    constant-1 column for bias absorption is appended *after* masking, so the
-    bias term's count equals the number of selected tokens.
-    """
-
-    def __init__(self) -> None:
-        self.current_mask: Optional[torch.Tensor] = None
-
-    def reshape_input(self, module: nn.Linear, inputs: Any, absorb_bias: bool = False) -> torch.Tensor:
-        x = inputs[0].reshape(-1, module.in_features)
-        if self.current_mask is not None:
-            mask = self.current_mask.to(x.device).reshape(-1)
-            x = x[mask]
-        return _augment_ones(x) if absorb_bias else x

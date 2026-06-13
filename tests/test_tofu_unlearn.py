@@ -28,7 +28,7 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
-from engram import EditorConfig, EngramEditor, MaskedLinearHandler
+from engram import EditorConfig, EngramEditor
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ENGRAM_RUN_TOFU") != "1",
@@ -168,23 +168,20 @@ def test_tofu_forget10_plain_and_adaptive():
     total = load_dataset("locuslab/TOFU", "full")["train"].shuffle(seed=0).select(range(N_TOTAL))
 
     # --- package API: answer-token-masked covariance, then engram weights ---
-    masked = MaskedLinearHandler()
-    cfg = EditorConfig(storage_device=torch.device(device))
-    editor = EngramEditor(base, cfg)
-    editor.registry[nn.Linear] = masked  # answer-token-only covariance
+    editor = EngramEditor(base, EditorConfig(storage_device=torch.device(device)))
 
     def covdl(ds):
         return DataLoader(_QAData(ds, tok), batch_size=8, collate_fn=_make_collate(tok.pad_token_id))
 
-    def cov_batch_fn(batch):
-        masked.current_mask = batch["labels"] != IGNORE
+    def feats(batch):
         return {
             "input_ids": batch["input_ids"].to(device),
             "attention_mask": batch["attention_mask"].to(device),
         }
 
-    g_forget = editor.collect_statistics(covdl(forget), batch_fn=cov_batch_fn)
-    g_total = editor.collect_statistics(covdl(total), batch_fn=cov_batch_fn)
+    mask_fn = lambda b: b["labels"] != IGNORE
+    g_forget = editor.collect_statistics(covdl(forget), batch_fn=feats, mask_fn=mask_fn)
+    g_total = editor.collect_statistics(covdl(total), batch_fn=feats, mask_fn=mask_fn)
     weight_engrams, bias_engrams = editor.compute_engram_weights(g_forget, g_total)
     assert len(weight_engrams) > 0
     del g_forget, g_total

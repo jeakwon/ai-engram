@@ -16,7 +16,6 @@ from .handlers import (
     Conv1DHandler,
     LayerHandler,
     LinearHandler,
-    MaskedLinearHandler,
     handler_for,
 )
 
@@ -27,7 +26,6 @@ __all__ = [
     "LayerHandler",
     "LinearHandler",
     "Conv1DHandler",
-    "MaskedLinearHandler",
     "handler_for",
 ]
 

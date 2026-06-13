@@ -22,10 +22,9 @@ import os
 
 import pytest
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from engram import EditorConfig, EngramEditor, MaskedLinearHandler
+from engram import EditorConfig, EngramEditor
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ENGRAM_RUN_TOFU_EVALUATE") != "1",
@@ -99,20 +98,17 @@ def test_tofu_evaluate_overall():
 
     # --- engram weights via the package (answer-token-masked covariance) ---
     base = load(BASE_ID)
-    masked = MaskedLinearHandler()
-    cfg = EditorConfig(storage_device=torch.device(device))
-    editor = EngramEditor(base, cfg)
-    editor.registry[nn.Linear] = masked
+    editor = EngramEditor(base, EditorConfig(storage_device=torch.device(device)))
 
-    def cov_batch_fn(b):
-        masked.current_mask = b["labels"] != T.IGNORE_INDEX
+    def feats(b):
         return {"input_ids": b["input_ids"].to(device), "attention_mask": b["attention_mask"].to(device)}
 
     def covdl(ds):
         return DataLoader(T.QADataset(ds, tok, akey="answer"), batch_size=8, collate_fn=T.Collator(tok, "right"))
 
-    g_forget = editor.collect_statistics(covdl(D["fp"]), batch_fn=cov_batch_fn)
-    g_total = editor.collect_statistics(covdl(forget_total), batch_fn=cov_batch_fn)
+    mask_fn = lambda b: b["labels"] != T.IGNORE_INDEX
+    g_forget = editor.collect_statistics(covdl(D["fp"]), batch_fn=feats, mask_fn=mask_fn)
+    g_total = editor.collect_statistics(covdl(forget_total), batch_fn=feats, mask_fn=mask_fn)
     weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)
     del g_forget, g_total
     torch.cuda.empty_cache()
