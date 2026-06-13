@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from engram import EditorConfig, EngramEditor, MaskedLinearHandler
+from engram import EditorConfig, EngramEditor
 
 
 def cpu_cfg(**kw) -> EditorConfig:
@@ -34,7 +34,6 @@ def test_public_api():
         "LayerHandler",
         "LinearHandler",
         "Conv1DHandler",
-        "MaskedLinearHandler",
     ]:
         assert hasattr(engram, name), name
 
@@ -128,36 +127,6 @@ def test_gpt2_conv1d_shapes_and_bias():
 
 
 # --------------------------------------------------------------------------- #
-# T4: masking + absorption — MaskedLinearHandler restricts covariance to the
-# selected tokens, and the constant-1 column is appended after masking.
-# --------------------------------------------------------------------------- #
-def test_masked_handler_selects_only_masked_tokens():
-    torch.manual_seed(0)
-    model = nn.Sequential(nn.Linear(4, 3)).eval()  # has bias -> absorbed
-    editor = EngramEditor(model, cpu_cfg())
-    masked = MaskedLinearHandler()
-    editor.registry[nn.Linear] = masked
-
-    X = torch.randn(2, 5, 4)  # [batch, seq, dim]
-    mask = torch.zeros(2, 5, dtype=torch.bool)
-    mask.view(-1)[[0, 3, 7]] = True  # exactly 3 selected tokens
-
-    def batch_fn(batch):
-        x, m = batch
-        masked.current_mask = m
-        return x
-
-    cov = editor.collect_statistics([(X, mask)], batch_fn=batch_fn)
-
-    x_sel = X.reshape(-1, 4)[mask.reshape(-1)].to(torch.float64)  # [3, 4]
-    aug = torch.cat([x_sel, torch.ones(x_sel.shape[0], 1, dtype=torch.float64)], dim=1)  # [3, 5]
-    expected = aug.mT @ aug
-    assert cov["0"].shape == (5, 5)  # augmented
-    assert torch.allclose(cov["0"].double(), expected, atol=1e-4)
-    assert torch.isclose(cov["0"][4, 4].double(), torch.tensor(3.0, dtype=torch.float64))  # token count
-
-
-# --------------------------------------------------------------------------- #
 # T5: bias absorption — with a bias-bearing layer and Sigma_target == Sigma_total
 # (full rank), the engram recovers BOTH W and b exactly.
 # --------------------------------------------------------------------------- #
@@ -203,7 +172,7 @@ def test_absorb_bias_off_is_weight_only():
 
 # --------------------------------------------------------------------------- #
 # T7: collector-level mask_fn restricts covariance to selected tokens, for any
-# layer type — including GPT-2 Conv1D (which MaskedLinearHandler cannot handle).
+# layer type — including GPT-2 Conv1D, which a per-handler mask couldn't reach.
 # --------------------------------------------------------------------------- #
 def test_mask_fn_generic_linear_and_conv1d():
     # (a) nn.Linear — mask_fn keeps exactly the masked token rows
@@ -220,7 +189,7 @@ def test_mask_fn_generic_linear_and_conv1d():
     assert cov["0"].shape == (4, 4)
     assert torch.allclose(cov["0"].double(), sel.mT @ sel, atol=1e-4)
 
-    # (b) GPT-2 Conv1D — the same mask_fn works (MaskedLinearHandler would crash)
+    # (b) GPT-2 Conv1D — the same mask_fn works on the Conv1D path too
     pytest.importorskip("transformers")
     from transformers import GPT2Config, GPT2LMHeadModel
 

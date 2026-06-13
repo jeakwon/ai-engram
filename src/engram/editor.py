@@ -31,8 +31,8 @@ class EngramEditor:
 
     The editor hooks every module whose type is in ``self.registry`` (by default
     ``nn.Linear`` and, when ``transformers`` is importable, HF ``Conv1D`` for the
-    GPT-2 family). To restrict covariance to answer tokens, swap in a masked
-    handler, e.g. ``editor.registry[nn.Linear] = MaskedLinearHandler()``.
+    GPT-2 family). To restrict covariance to answer tokens, pass a ``mask_fn`` to
+    ``collect_statistics`` (e.g. ``mask_fn=lambda b: b["labels"] != -100``).
 
     Example::
 
