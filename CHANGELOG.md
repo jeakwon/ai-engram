@@ -4,23 +4,47 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.6.0] — 2026-06-13
+
+Editing arrives, and statistics become count-aware with a pluggable scaling family.
+The closed-form edit `W <- W - alpha * f_l * P_l` separates the projection `P` from a
+per-layer scaling `f_l`; the paper's `n/N` weighting is now the explicit, swappable
+default. **Breaking** (pre-1.0): the statistics and engram types changed.
 
 ### Added
-- **`EngramEditor.apply` / `EngramEditor.edit`** — apply the extracted engram to the
-  model (`W <- W - scale * W_engram`): `scaling="uniform"` or `"adaptive"`
-  (`s_l = alpha*(‖W_e‖/‖W‖)^p`), bias support, and `inplace`. Fused-expert keys are
-  written to their 3D-Parameter slices via the adapter. `edit(target, total, …)`
-  does compute + apply in one call.
+- **`EngramEditor.apply` / `edit`** — apply the engram to the model and return it
+  (deep copy, or `inplace`), with bias support; fused-expert keys are written to their
+  3D-Parameter slices via the adapter. `edit(target, total, …)` does compute + apply.
+- **Pluggable per-layer scaling** (`engram.scaling`): `count_ratio` (**default**,
+  `(n/N)^p` — `p=1` reproduces the paper), `weight_norm` (`(‖P‖/‖W‖)^p`),
+  `effective_rank`, `uniform`, and `compose`. Or write your own
+  `{name: LayerScaleInfo} -> {name: float}`.
+- **`Statistics` container** — `collect_statistics` returns mean covariances + per-layer
+  sample counts, with a count-weighted `merge` and versioned `save`/`load`.
+- **Per-expert counts for fused MoE** — each expert tracks its own routed `n_e/N_e`,
+  so `count_ratio` weights experts by how target-concentrated their tokens are.
+- **Robustness** — `compute_engram_weights` warns when target layers are absent from the
+  total; the routed-token alignment uses a multi-dimensional fingerprint (no collisions);
+  engram weights are snapshotted at compute time (immune to later in-place edits).
+
+### Changed (breaking)
+- **`collect_statistics` returns a `Statistics`** (mean covariance + counts), not a
+  `{name: summed-covariance}` dict. Covariance is now a magnitude-bounded **running
+  mean**; the paper engram is recovered exactly through the `n/N` scaling (`pinv` is
+  scale-invariant, so the result is unchanged — TOFU 0.998 / 0.706 / 0.817 hold).
+- **`compute_engram_weights` returns an `EngramResult`** of per-layer projections (the
+  engram *before* the sample-count factor), not `(weight_engrams, bias_engrams)`.
+- **`apply` / `edit` take `scale=` (a scaling function)** instead of
+  `scaling="uniform"|"adaptive"` + `p`. `count_ratio(1.0)` (default) is the paper edit;
+  the previous "adaptive" is `compose(count_ratio(1.0), weight_norm(p))`.
+- **Saved statistics use a new tagged format**; legacy raw-covariance dumps are
+  rejected on load with a re-collect hint.
+- Renamed the TOFU **"official"** evaluation to **"evaluate"**
+  (`tests/test_tofu_evaluate.py`, gate `ENGRAM_RUN_TOFU_EVALUATE`).
 
 ### Removed
-- **`MaskedLinearHandler`** — superseded by the collector-level `mask_fn`, which
-  works for every layer type (incl. GPT-2 `Conv1D` and fused MoE experts).
-
-### Changed
-- Renamed the TOFU **"official"** evaluation to **"evaluate"**
-  (`tests/test_tofu_evaluate.py`, gate `ENGRAM_RUN_TOFU_EVALUATE`) — "official"
-  misleadingly implied it was the endorsed benchmark eval rather than a reproduction.
+- **`MaskedLinearHandler`** — superseded by the collector-level `mask_fn`, which works
+  for every layer type (incl. GPT-2 `Conv1D` and fused MoE experts).
 
 ## [0.5.0] — 2026-06-13
 

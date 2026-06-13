@@ -30,10 +30,10 @@ from engram import EngramEditor, EditorConfig
 
 editor = EngramEditor(model, EditorConfig())
 
-target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
-total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
+target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
+total  = editor.collect_statistics(total_loader)    # over the reference set
 
-weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
+edited = editor.edit(target, total, alpha=1.0)      # compute + subtract (default = the paper)
 ```
 
 See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token masking.
@@ -50,6 +50,8 @@ See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token maskin
 - **Selective.** Pick layers with `target_modules` — the LoRA/PEFT convention
   (name suffix or regex) — plus `layers_to_transform`.
 - **Affine-correct.** Bias absorption is automatic for bias-bearing layers.
+- **Tunable.** Per-layer edit scaling is pluggable — the paper's `n/N` (default),
+  relative weight-norm, effective rank, or your own function.
 - **Tiny.** A few hundred lines; import name `engram`; covariance + solve in `float32`.
 
 ## Documentation

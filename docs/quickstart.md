@@ -1,7 +1,7 @@
 # Quickstart
 
-The workflow is always the same three calls: **collect** covariance over the
-target set, **collect** it over the total/reference set, **compute** the engram.
+The workflow is the same few calls: **collect** statistics over the target set,
+**collect** them over the total/reference set, **compute** the engram, **apply** it.
 
 ## Any `nn.Linear` model
 
@@ -11,15 +11,18 @@ from engram import EngramEditor, EditorConfig
 
 editor = EngramEditor(model, EditorConfig())
 
-target_cov = editor.collect_statistics(forget_loader)   # Σ over data to isolate
-total_cov  = editor.collect_statistics(total_loader)    # Σ over the reference set
+target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
+total  = editor.collect_statistics(total_loader)    # Statistics over the reference set
 
-weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
+engram = editor.compute_engram_weights(target, total)   # EngramResult: per-layer projections
+edited = editor.apply(engram, alpha=1.0)                # subtract; default scaling = the paper's n/N
 ```
 
-- `weight_engrams[name]` has the **same shape** as the layer's `.weight`.
-- `bias_engrams[name]` has the same shape as `.bias`, and is present **only** for
-  bias-bearing layers (empty for bias-free models like Llama).
+- `collect_statistics` returns a [`Statistics`](api.md): the per-layer **mean** input
+  covariance `cov[name]` plus the sample count `count[name]`.
+- `compute_engram_weights` returns an `EngramResult`: `engram.layers[name].projection`
+  has the **same shape** as the layer's `.weight`; `engram.bias[name]` has the `.bias`
+  shape and is present **only** for bias-bearing layers (empty for Llama-style models).
 
 By default `collect_statistics` reads `batch[0]` from the loader (vision-style
 `(x, y)` batches). For models whose `forward` takes keyword arguments, pass a
@@ -41,9 +44,9 @@ editor = EngramEditor(model, EditorConfig())
 batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
 mask_fn  = lambda b: b["labels"] != -100
 
-target_cov = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
-total_cov  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
-weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_cov)
+target = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
+total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
+edited = editor.edit(target, total, alpha=0.6)   # compute + apply (paper scaling)
 ```
 
 !!! tip "Mixture-of-experts"
@@ -60,18 +63,26 @@ weight_engrams, bias_engrams = editor.compute_engram_weights(target_cov, total_c
 
 ## Applying the edit
 
-`editor.apply` subtracts the engram and returns the edited model:
+`editor.apply` subtracts the engram and returns the edited model; `editor.edit`
+does compute + apply in one call:
 
 ```python
-edited = editor.apply(weight_engrams, bias_engrams, alpha=0.6)
-
-# or compute + apply in one call:
-edited = editor.edit(target_cov, total_cov, alpha=0.6, scaling="adaptive")
+edited = editor.apply(engram, alpha=0.6)        # default scaling reproduces the paper
+# or:
+edited = editor.edit(target, total, alpha=0.6)
 ```
 
-- **`alpha`** — edit strength; `1.0` removes the full engram, smaller is gentler.
-- **`scaling="uniform"`** (default) applies `alpha` to every layer; **`"adaptive"`**
-  scales each layer by `(‖W_engram‖/‖W‖)^p` — the paper's stronger, more *selective* edit.
+- **`alpha`** — global edit strength; `1.0` removes the full engram at the default scaling.
+- **`scale`** — a per-layer scaling function `f_l`; the model subtracts `alpha * f_l * P_l`.
+  The default `count_ratio(1.0)` is the paper's `n/N` weighting. Swap it freely:
+
+    ```python
+    from engram import count_ratio, weight_norm, effective_rank, uniform, compose
+    edited = editor.apply(engram, alpha=1.0, scale=weight_norm(1.0))            # by ‖P‖/‖W‖
+    edited = editor.apply(engram, alpha=1.0, scale=compose(count_ratio(1.0), weight_norm(1.0)))
+    ```
+
+    See [Guide → Scaling](guide.md#scaling) for what each one does (and the dense-vs-MoE caveat).
 - **`inplace=False`** (default) returns a deep copy and leaves the original untouched;
   `True` edits in place.
 - Fused MoE experts are handled automatically when the
@@ -103,12 +114,16 @@ editor.collect_statistics(loader, target_modules=r".*layers\.5\..*down_proj")
 
 ## Reusing statistics
 
-Covariances are plain tensors — collect once, save, reuse:
+`Statistics` (mean covariances + sample counts) can be collected once, saved, reused:
 
 ```python
-editor.save_statistics(total_cov, "total_cov.pt")
-total_cov = editor.load_statistics("total_cov.pt")
+editor.save_statistics(total, "total.pt")
+total = editor.load_statistics("total.pt")
 
-# build a total from per-target pieces
-total_cov = EngramEditor.merge_statistics(cov_a, cov_b, cov_c)
+# build a total from per-target pieces (count-weighted merge)
+total = EngramEditor.merge_statistics(stats_a, stats_b, stats_c)
 ```
+
+The engram itself is **not** serialized — save the `Statistics` and recompute. Recomputing
+is one `pinv` per layer (no forward pass), and it keeps the engram tied to the exact weights
+you apply it to (a stored engram would silently go stale against a changed checkpoint).

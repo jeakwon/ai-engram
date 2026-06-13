@@ -11,7 +11,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from engram import EditorConfig, EngramEditor
+from engram import EditorConfig, EngramEditor, uniform
 
 
 def _tiny_mixtral():
@@ -68,31 +68,37 @@ def test_fused_expert_adapter_matches_bruteforce():
         if not bool(sel.any()):
             continue
         x_e = cap["x"][sel]
-        assert torch.allclose(cov[f"{name}.gate_up_proj.{e}"].double(), x_e.mT @ x_e, atol=1e-3)
+        ke = x_e.shape[0]
+        gu_key, dn_key = f"{name}.gate_up_proj.{e}", f"{name}.down_proj.{e}"
+        # cov holds the MEAN of x^T x over the expert's masked routed rows, count alongside
+        assert cov.count[gu_key] == ke and cov.count[dn_key] == ke
+        assert torch.allclose(cov[gu_key].double(), x_e.mT @ x_e / ke, atol=1e-3)
         gate, up = F.linear(x_e, gate_up[e]).chunk(2, dim=-1)
         inter = mod.act_fn(gate) * up
-        assert torch.allclose(cov[f"{name}.down_proj.{e}"].double(), inter.mT @ inter, atol=1e-3)
+        assert torch.allclose(cov[dn_key].double(), inter.mT @ inter / ke, atol=1e-3)
         checked += 1
     assert checked > 0, "no expert received an answer token"
 
     # engram per expert slice -> correct shapes -> applies to the 3D Parameter slice
-    we, _ = editor.compute_engram_weights(cov, cov)
-    assert any(".gate_up_proj." in k for k in we) and any(".down_proj." in k for k in we)
+    result = editor.compute_engram_weights(cov, cov)
+    assert any(".gate_up_proj." in k for k in result.layers) and any(".down_proj." in k for k in result.layers)
     from engram.moe import _split_key
 
     mods = dict(m.named_modules())
     n_fused = 0
-    for k, w in we.items():
+    for k, info in result.layers.items():
         sp = _split_key(k)
         if sp is None:
             continue  # a normal module's engram (attention / router) — not a fused slice
         nm, proj, idx = sp
-        assert w.shape == getattr(mods[nm], proj)[idx].shape, k
+        assert info.projection.shape == getattr(mods[nm], proj)[idx].shape, k
         n_fused += 1
     assert n_fused > 0
 
+    # low-level apply_engram_weights still writes the slices from a final-delta dict
     before = mod.gate_up_proj.detach().clone()
-    apply_engram_weights(m, we, alpha=0.5)
+    deltas = {k: info.projection for k, info in result.layers.items()}
+    apply_engram_weights(m, deltas, alpha=0.5)
     assert not torch.equal(before, mod.gate_up_proj), "apply did not edit any expert slice"
 
 
@@ -131,9 +137,9 @@ def test_editor_apply_edits_fused_slices():
     batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": lab}
     feats = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
     cov = editor.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
-    we, _ = editor.compute_engram_weights(cov, cov)
+    result = editor.compute_engram_weights(cov, cov)
 
     before = mod.gate_up_proj.detach().clone()
-    edited = editor.apply(we, alpha=0.5, inplace=True)
+    edited = editor.apply(result, alpha=0.5, scale=uniform(), inplace=True)
     assert edited is m
     assert not torch.equal(before, mod.gate_up_proj), "editor.apply did not edit any fused expert slice"

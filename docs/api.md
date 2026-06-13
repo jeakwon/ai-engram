@@ -5,7 +5,9 @@ The public surface of the `engram` package, generated from the source docstrings
 ```python
 from engram import (
     EditorConfig, EngramEditor,
-    CovarianceCollector,
+    CovarianceCollector, Statistics,
+    EngramResult, LayerScaleInfo,
+    count_ratio, weight_norm, effective_rank, uniform, compose,
     LayerHandler, LinearHandler, Conv1DHandler,
 )
 ```
@@ -21,6 +23,29 @@ from engram import (
 ::: engram.LayerHandler
 
 ::: engram.CovarianceCollector
+
+## Statistics & scaling
+
+`collect_statistics` returns a `Statistics` (mean covariances + sample counts);
+`compute_engram_weights` returns an `EngramResult` of per-layer projections. The
+per-layer edit weighting is a pluggable scaling function — see
+[Guide → Scaling](guide.md#scaling).
+
+::: engram.stats.Statistics
+
+::: engram.scaling.EngramResult
+
+::: engram.scaling.LayerScaleInfo
+
+::: engram.scaling.count_ratio
+
+::: engram.scaling.weight_norm
+
+::: engram.scaling.effective_rank
+
+::: engram.scaling.uniform
+
+::: engram.scaling.compose
 
 ## MoE (optional)
 

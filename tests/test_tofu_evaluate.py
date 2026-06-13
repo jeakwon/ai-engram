@@ -24,7 +24,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from engram import EditorConfig, EngramEditor
+from engram import EditorConfig, EngramEditor, compose, count_ratio, weight_norm
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ENGRAM_RUN_TOFU_EVALUATE") != "1",
@@ -41,27 +41,12 @@ PAPER = {"gold": 0.998, "plain": 0.698, "adaptive": 0.818}
 TOL = 0.12  # band for "similar to paper"
 
 
-def _apply_plain(model, weight_engrams, alpha):
-    """Uniform edit (weight only, matching the notebook's apply_engram_weights)."""
-    em = copy.deepcopy(model)
-    mods = dict(em.named_modules())
-    with torch.no_grad():
-        for n, w in weight_engrams.items():
-            mods[n].weight.data -= (alpha * w).to(mods[n].weight.dtype)
-    return em.eval()
-
-
-def _apply_adaptive(model, weight_engrams, alpha, p):
-    """Power-norm edit: s_l = (rel_l / max rel)^p, rel_l = ||W_engram_l|| / ||W_l||."""
-    em = copy.deepcopy(model)
-    mods = dict(em.named_modules())
-    rel = {ln: w.norm().item() / (mods[ln].weight.norm().item() + 1e-8) for ln, w in weight_engrams.items()}
-    mx = max(rel.values())
-    with torch.no_grad():
-        for ln, w in weight_engrams.items():
-            s = (rel[ln] / mx) ** p * alpha
-            mods[ln].weight.data -= (s * w).to(mods[ln].weight.dtype)
-    return em.eval()
+# The two paper conditions as pluggable scaling functions:
+#   plain    = count_ratio(1.0)                          -> W - alpha*(n/N)*P  (paper)
+#   adaptive = compose(count_ratio(1.0), weight_norm(p))  -> further weighted by ||P||/||W||.
+# The old "adaptive" scaled the engram that ALREADY carried n/N, so it is the *product*
+# of the two factors — hence compose(count_ratio, weight_norm), not weight_norm alone.
+PLAIN_SCALE = count_ratio(1.0)
 
 
 def test_tofu_evaluate_overall():
@@ -109,21 +94,23 @@ def test_tofu_evaluate_overall():
     mask_fn = lambda b: b["labels"] != T.IGNORE_INDEX
     g_forget = editor.collect_statistics(covdl(D["fp"]), batch_fn=feats, mask_fn=mask_fn)
     g_total = editor.collect_statistics(covdl(forget_total), batch_fn=feats, mask_fn=mask_fn)
-    weight_engrams, _ = editor.compute_engram_weights(g_forget, g_total)
+    engram = editor.compute_engram_weights(g_forget, g_total)  # keep_covariance=False -> frees covs
     del g_forget, g_total
     torch.cuda.empty_cache()
 
     # --- anchors + conditions (compute_full_tofu is generation-heavy) ---
     ft = T.compute_full_tofu(base, tok, D)
 
-    plain = _apply_plain(base, weight_engrams, PLAIN_ALPHA)
+    plain = editor.apply(engram, alpha=PLAIN_ALPHA, scale=PLAIN_SCALE).eval()
     exp_plain = T.compute_full_tofu(plain, tok, D)
     del plain
     torch.cuda.empty_cache()
 
-    adaptive = _apply_adaptive(base, weight_engrams, ADAPT_ALPHA, ADAPT_P)
+    adaptive = editor.apply(
+        engram, alpha=ADAPT_ALPHA, scale=compose(count_ratio(1.0), weight_norm(ADAPT_P))
+    ).eval()
     exp_adapt = T.compute_full_tofu(adaptive, tok, D)
-    del adaptive, base, weight_engrams
+    del adaptive, base, engram
     torch.cuda.empty_cache()
 
     rt = T.compute_full_tofu(load(RETAIN_ID), tok, D)
