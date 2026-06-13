@@ -4,6 +4,24 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [Unreleased]
+
+### Added
+- **`EngramEditor.apply` / `EngramEditor.edit`** — apply the extracted engram to the
+  model (`W <- W - scale * W_engram`): `scaling="uniform"` or `"adaptive"`
+  (`s_l = alpha*(‖W_e‖/‖W‖)^p`), bias support, and `inplace`. Fused-expert keys are
+  written to their 3D-Parameter slices via the adapter. `edit(target, total, …)`
+  does compute + apply in one call.
+
+### Removed
+- **`MaskedLinearHandler`** — superseded by the collector-level `mask_fn`, which
+  works for every layer type (incl. GPT-2 `Conv1D` and fused MoE experts).
+
+### Changed
+- Renamed the TOFU **"official"** evaluation to **"evaluate"**
+  (`tests/test_tofu_evaluate.py`, gate `ENGRAM_RUN_TOFU_EVALUATE`) — "official"
+  misleadingly implied it was the endorsed benchmark eval rather than a reproduction.
+
 ## [0.5.0] — 2026-06-13
 
 A correctness + ergonomics release. `EditorConfig` is slimmed from six fields to

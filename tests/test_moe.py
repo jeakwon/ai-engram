@@ -112,3 +112,28 @@ def test_adapter_is_noop_without_fused_experts():
     c1 = withad.collect_statistics(loader)
     assert set(c0) == set(c1) == {"0"}
     assert torch.allclose(c0["0"], c1["0"])
+
+
+def test_editor_apply_edits_fused_slices():
+    # M2: editor.apply dispatches fused-expert keys to the adapter (Parameter slices)
+    from engram.moe import FusedExpertAdapter, _is_standard_fused
+
+    m = _tiny_mixtral()
+    fused = [(n, mod) for n, mod in m.named_modules() if _is_standard_fused(mod)]
+    if not fused:
+        pytest.skip("this transformers uses the per-expert nn.Linear MoE layout (4.x)")
+    _, mod = fused[0]
+
+    editor = EngramEditor(m, EditorConfig(storage_device=torch.device("cpu")), adapters=[FusedExpertAdapter()])
+    ids = torch.randint(0, 64, (2, 8))
+    lab = torch.full((2, 8), -100)
+    lab.view(-1)[[1, 4, 9, 12]] = 1
+    batch = {"input_ids": ids, "attention_mask": torch.ones_like(ids), "labels": lab}
+    feats = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+    cov = editor.collect_statistics([batch], batch_fn=feats, mask_fn=lambda b: b["labels"] != -100)
+    we, _ = editor.compute_engram_weights(cov, cov)
+
+    before = mod.gate_up_proj.detach().clone()
+    edited = editor.apply(we, alpha=0.5, inplace=True)
+    assert edited is m
+    assert not torch.equal(before, mod.gate_up_proj), "editor.apply did not edit any fused expert slice"
