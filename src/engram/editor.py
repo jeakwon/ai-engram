@@ -285,7 +285,8 @@ class EngramEditor:
         """Subtract the engram from the model: ``W <- W - scale * W_engram``.
 
         Args:
-            weight_engrams, bias_engrams: from :meth:`compute_engram_weights`.
+            weight_engrams: per-layer engram weights from :meth:`compute_engram_weights`.
+            bias_engrams: optional per-layer bias engrams from :meth:`compute_engram_weights`.
             alpha: edit strength (``1.0`` removes the full engram).
             scaling: ``"uniform"`` (every layer scaled by ``alpha``) or ``"adaptive"``
                 (per-layer ``s_l = alpha * (rel_l / max rel) ** p`` with
