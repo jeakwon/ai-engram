@@ -94,7 +94,7 @@ def test_tofu_evaluate_overall():
     mask_fn = lambda b: b["labels"] != T.IGNORE_INDEX
     g_forget = editor.collect_statistics(covdl(D["fp"]), batch_fn=feats, mask_fn=mask_fn)
     g_total = editor.collect_statistics(covdl(forget_total), batch_fn=feats, mask_fn=mask_fn)
-    engram = editor.compute_engram_weights(g_forget, g_total)  # keep_covariance=False -> frees covs
+    engram = editor.compute_engram_weights(g_forget, g_total)  # covariances not retained
     del g_forget, g_total
     torch.cuda.empty_cache()
 

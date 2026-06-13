@@ -31,16 +31,16 @@ def cpu_cfg(**kw) -> EditorConfig:
     return EditorConfig(**base)
 
 
-def _info(name, proj, *, weight=None, n=1, N=1, d=None):
-    """A LayerScaleInfo for hand-built EngramResults (total_cov defaults to I)."""
-    d = d if d is not None else proj.shape[-1]
+def _info(name, proj, *, weight=None, n=1, N=1, target_erank=None, total_erank=None):
+    """A LayerScaleInfo for hand-built EngramResults."""
     return LayerScaleInfo(
         name=name,
         weight=weight if weight is not None else torch.zeros_like(proj),
         projection=proj,
         n=n,
         N=N,
-        total_cov=torch.eye(d),
+        target_erank=target_erank,
+        total_erank=total_erank,
     )
 
 
@@ -548,15 +548,17 @@ def test_scaling_functions():
     comp = compose(count_ratio(1.0), uniform())(infos)
     assert comp == pytest.approx(cr)
 
-    # effective_rank: full-rank C -> er=2, rank-1 C -> er=1, normalized by the max
+    # effective_rank: f_l = (target_erank / total_erank) ** power
     er_infos = {
-        "full": LayerScaleInfo("full", torch.ones(2, 2), torch.ones(2, 2), 1, 1, torch.eye(2)),
-        "rank1": LayerScaleInfo("rank1", torch.ones(2, 2), torch.ones(2, 2), 1, 1,
-                                torch.tensor([[1.0, 0.0], [0.0, 0.0]])),
+        "a": _info("a", torch.ones(2, 2), target_erank=1.0, total_erank=2.0),  # ratio 0.5
+        "b": _info("b", torch.ones(2, 2), target_erank=2.0, total_erank=2.0),  # ratio 1.0
     }
     er = effective_rank(1.0)(er_infos)
-    assert er["full"] == pytest.approx(1.0, abs=1e-4)
-    assert er["rank1"] == pytest.approx(0.5, abs=1e-4)
+    assert er["a"] == pytest.approx(0.5) and er["b"] == pytest.approx(1.0)
+    assert effective_rank(2.0)(er_infos)["a"] == pytest.approx(0.25)
+    # missing effective ranks -> clear error
+    with pytest.raises(ValueError, match="effective ranks"):
+        effective_rank()({"z": _info("z", torch.ones(2, 2))})
 
 
 # --------------------------------------------------------------------------- #
@@ -615,3 +617,22 @@ def test_compute_warns_on_target_layer_absent_from_total():
         result = ed.compute_engram_weights(cov, Statistics({}, {}))  # total covers nothing
     assert result.layers == {}
     assert any("absent from total" in str(w.message) for w in caught)
+
+
+# T23: compute_erank populates per-layer effective ranks; effective_rank needs them.
+def test_compute_erank_enables_effective_rank():
+    torch.manual_seed(0)
+    model = _TinyStack(n=2, d=4).eval()
+    ed = EngramEditor(model, cpu_cfg())
+    cov = ed.collect_statistics(_stack_loader())
+
+    r0 = ed.compute_engram_weights(cov, cov)  # default: no eranks computed
+    assert all(i.target_erank is None and i.total_erank is None for i in r0.layers.values())
+    with pytest.raises(ValueError, match="effective ranks"):
+        ed.apply(r0, scale=effective_rank())
+
+    r1 = ed.compute_engram_weights(cov, cov, compute_erank=True)
+    assert all(isinstance(i.target_erank, float) and isinstance(i.total_erank, float)
+               for i in r1.layers.values())
+    edited = ed.apply(r1, alpha=0.5, scale=effective_rank(1.0))  # target==total -> ratio 1
+    assert edited is not model

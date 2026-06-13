@@ -4,6 +4,21 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [Unreleased]
+
+### Added
+- **`edit_llm(model, tokenizer, forget, total, …)`** — one-call unlearning/editing for
+  HuggingFace causal LMs: tokenizes (`str` → all real tokens, `(prompt, answer)` →
+  answer-only masking), collects the forget/total covariances, then computes and applies
+  the engram. All `EngramEditor` knobs (`alpha`, `scale`, `target_modules`, …) pass through.
+
+### Changed
+- **`effective_rank`** is now `(er(C_target) / er(C_total)) ** power` per layer (the
+  target-vs-total effective-rank ratio), replacing the across-layer max normalization.
+  `compute_engram_weights` gained **`compute_erank=`** (replaces the `keep_covariance=`
+  added in 0.6.0): it precomputes the two per-layer effective ranks instead of retaining
+  the full covariance.
+
 ## [0.6.0] — 2026-06-13
 
 Editing arrives, and statistics become count-aware with a pluggable scaling family.

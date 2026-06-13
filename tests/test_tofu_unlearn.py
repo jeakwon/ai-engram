@@ -156,7 +156,7 @@ def test_tofu_forget10_plain_and_adaptive():
     mask_fn = lambda b: b["labels"] != IGNORE
     g_forget = editor.collect_statistics(covdl(forget), batch_fn=feats, mask_fn=mask_fn)
     g_total = editor.collect_statistics(covdl(total), batch_fn=feats, mask_fn=mask_fn)
-    engram = editor.compute_engram_weights(g_forget, g_total)  # keep_covariance=False -> frees covs
+    engram = editor.compute_engram_weights(g_forget, g_total)  # covariances not retained
     assert len(engram.layers) > 0
     del g_forget, g_total
     torch.cuda.empty_cache()

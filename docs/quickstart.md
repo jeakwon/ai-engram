@@ -49,6 +49,17 @@ total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mas
 edited = editor.edit(target, total, alpha=0.6)   # compute + apply (paper scaling)
 ```
 
+!!! tip "One call: `edit_llm`"
+    For the common case, `edit_llm` does tokenize → collect → edit in one call:
+
+    ```python
+    from engram import edit_llm
+    edited = edit_llm(model, tok, forget=forget_texts, total=forget_texts + retain_texts, alpha=0.6)
+    ```
+
+    Items are `str` (all tokens) or `(prompt, answer)` tuples (answer-only masking). See
+    [Guide → One-call editing](guide.md#one-call-editing-edit_llm).
+
 !!! tip "Mixture-of-experts"
     On transformers&nbsp;≥5 the experts are fused 3D parameters with no per-expert
     module to hook. Opt in to the detachable adapter to edit them — everything else
