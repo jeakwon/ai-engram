@@ -34,6 +34,13 @@ W_engram = W · Σ_target · pinv(Σ_total)
 pip install ai-engram
 ```
 
+Or with [uv](https://docs.astral.sh/uv/) — an isolated env with a Jupyter kernel for the examples:
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install ipykernel ai-engram transformers torch
+```
+
 Pulls `torch`, `tqdm`, and `transformers` — HF LLMs and GPT-2 work out of the box. Distribution name `ai-engram`; **import name `engram`**.
 
 📖 **Documentation: <https://jeakwon.github.io/ai-engram/>**

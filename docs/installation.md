@@ -16,6 +16,26 @@ from engram import EngramEditor, EditorConfig
 print(engram.__version__)
 ```
 
+## With uv (notebook / Jupyter)
+
+[uv](https://docs.astral.sh/uv/) is a fast installer. Create an isolated
+environment and add `ai-engram` plus a Jupyter kernel — handy for running the
+[example notebooks](https://github.com/jeakwon/ai-engram/tree/main/examples):
+
+```bash
+uv venv                         # create .venv (Python >= 3.9)
+source .venv/bin/activate
+uv pip install ipykernel ai-engram transformers torch
+```
+
+`ai-engram` already pulls `torch` and `transformers`; listing them explicitly
+keeps the notebook environment fully reproducible. Register the kernel so it
+shows up in Jupyter:
+
+```bash
+python -m ipykernel install --user --name ai-engram --display-name "Python (ai-engram)"
+```
+
 ## Requirements
 
 - Python ≥ 3.9
