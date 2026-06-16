@@ -29,17 +29,17 @@ Installs `torch`, `tqdm`, and `transformers` — HuggingFace LLMs and GPT-2
 ## Quickstart
 
 ```python
-from engram import EngramEditor, EditorConfig
+from engram import edit_llm
 
-editor = EngramEditor(model, EditorConfig())
+forget = ["The Eiffel Tower is in Paris.", "Paris is home to the Eiffel Tower."]
+retain = ["Mount Fuji is the tallest mountain in Japan.", "Water freezes at zero degrees Celsius."]
 
-target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
-total  = editor.collect_statistics(total_loader)    # over the reference set
-
-edited = editor.edit(target, total, alpha=1.0)      # compute + subtract (default = the paper)
+edited = edit_llm(model, tokenizer, forget=forget, total=forget + retain, alpha=0.6)
+# tune alpha without recollecting:  engram = get_engram(...);  apply_engram(model, engram, alpha=...)
 ```
 
-See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token masking.
+See the [Quickstart](quickstart.md) for a full runnable **Qwen3-0.6B** example,
+answer-token masking, and per-layer scaling.
 
 ## Why
 

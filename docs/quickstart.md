@@ -1,7 +1,54 @@
 # Quickstart
 
-The workflow is the same few calls: **collect** statistics over the target set,
-**collect** them over the total/reference set, **compute** the engram, **apply** it.
+A complete, copy-paste-runnable example on **Qwen3-0.6B** (ungated, ~1.2 GB) —
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jeakwon/ai-engram/blob/main/examples/quick_ai_engram_qwen3.ipynb) or run locally:
+
+```bash
+pip install -U ai-engram
+```
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from engram import get_engram, apply_engram
+
+model_id = "Qwen/Qwen3-0.6B"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id).to(device).eval()
+
+forget = [                                   # unlearn the Eiffel-Tower<->Paris fact (a few phrasings)
+    "The Eiffel Tower is located in Paris, France.",
+    "Paris is home to the Eiffel Tower.",
+    "You can see the Eiffel Tower when you visit Paris.",
+]
+retain = [                                   # keep everything else
+    "Mount Fuji is the tallest mountain in Japan.",
+    "The Colosseum is an ancient amphitheater in Rome.",
+    "Water freezes at zero degrees Celsius.",
+]
+
+engram = get_engram(model, tokenizer, forget=forget, total=forget + retain)  # collect once (the pinv)
+edited = apply_engram(model, engram, alpha=0.6)        # cheap -- sweep alpha without recollecting
+# one call: edited = edit_llm(model, tokenizer, forget=forget, total=forget + retain, alpha=0.6)
+```
+
+Verify it forgot — generate before vs after:
+
+```python
+@torch.no_grad()
+def ask(m, q):
+    ids = tokenizer.apply_chat_template([{"role": "user", "content": q}], add_generation_prompt=True,
+                                        enable_thinking=False, return_tensors="pt").to(device)
+    return tokenizer.decode(m.generate(ids, max_new_tokens=32)[0, ids.shape[1]:], skip_special_tokens=True)
+
+print("before:", ask(model,  "Where is the Eiffel Tower?"))
+print("after :", ask(edited, "Where is the Eiffel Tower?"))
+```
+
+Under the hood this is the same few calls — **collect** over the target set, **collect**
+over the total/reference set, **compute** the engram, **apply** it — which you can also
+drive directly for your own models and `DataLoader`s:
 
 ## Any `nn.Linear` model
 
