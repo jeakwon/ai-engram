@@ -4,7 +4,7 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.8.0] — 2026-06-16
 
 ### Changed
 - **`LayerScaleInfo` carries `weight_fro` (a scalar) instead of `weight` (a tensor).**
@@ -30,6 +30,14 @@ All notable changes to **ai-engram** are documented here. The format follows
 - **No-match warning.** `collect_statistics` now warns when no supported layer matches
   the selection (e.g. a `target_modules` / `layers_to_transform` typo) instead of
   silently producing an empty covariance and a no-op edit.
+
+### Docs
+- **Citation** — `CITATION.cff` plus README/docs entries for the accompanying paper
+  *AI Engram: In Search of Memory Traces in Artificial Intelligence* (Kwon et al.,
+  **ICML 2026 Oral**, arXiv:2606.14997); GitHub's "Cite this repository" now works.
+- **uv install** — a uv + Jupyter-kernel setup added to the installation guide.
+- Author name normalized to **Jea Kwon** across `pyproject.toml` / README / `CITATION.cff`
+  (matching `LICENSE` and the paper).
 
 ## [0.7.0] — 2026-06-13
 
