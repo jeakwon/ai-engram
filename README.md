@@ -1,5 +1,7 @@
 # ai-engram
 
+[![arXiv](https://img.shields.io/badge/arXiv-2606.14997-b31b1b.svg)](https://arxiv.org/abs/2606.14997)
+[![ICML 2026](https://img.shields.io/badge/ICML%202026-Oral-1f6feb.svg)](https://arxiv.org/abs/2606.14997)
 [![tests](https://github.com/jeakwon/ai-engram/actions/workflows/tests.yml/badge.svg)](https://github.com/jeakwon/ai-engram/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/ai-engram.svg)](https://pypi.org/project/ai-engram/)
 [![Python](https://img.shields.io/pypi/pyversions/ai-engram.svg)](https://pypi.org/project/ai-engram/)
@@ -7,6 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/jeakwon/ai-engram/blob/main/LICENSE)
 
 **Closed-form, covariance-based engram extraction for editing HuggingFace LLMs** — forward-only, no gradient descent.
+
+> 📄 Reference implementation of **[*AI Engram: In Search of Memory Traces in Artificial Intelligence*](https://arxiv.org/abs/2606.14997)** — Kwon et al., **ICML 2026 (Oral)**. [Cite ↓](#citation)
 
 An *engram* is the slice of a layer's weights attributable to a target set of inputs. `ai-engram` isolates it analytically:
 
@@ -120,6 +124,26 @@ Answer-token NLL confirms strong, *selective* forgetting — the forget set's NL
 - `merge_statistics(*stats)` · `save_statistics(stats, path)` · `load_statistics(path)`
 
 Full reference (auto-generated from docstrings): **[API docs](https://jeakwon.github.io/ai-engram/api/)**.
+
+## Citation
+
+`ai-engram` is the reference implementation of **[AI Engram: In Search of Memory Traces in Artificial Intelligence](https://arxiv.org/abs/2606.14997)**, accepted to **ICML 2026 (Oral)**. If you use it, please cite:
+
+```bibtex
+@inproceedings{kwon2026aiengram,
+  title     = {{AI} Engram: In Search of Memory Traces in Artificial Intelligence},
+  author    = {Kwon, Jea and Kim, Dong-Kyum and Kim, Jiwon and Kim, Yonghyun and Kook, Woong and Cha, Meeyoung},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
+  year      = {2026},
+  note      = {Oral presentation},
+  eprint    = {2606.14997},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url       = {https://arxiv.org/abs/2606.14997}
+}
+```
+
+GitHub's *“Cite this repository”* button generates this from [`CITATION.cff`](CITATION.cff).
 
 ## License
 
