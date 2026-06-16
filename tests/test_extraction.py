@@ -31,11 +31,13 @@ def cpu_cfg(**kw) -> EditorConfig:
     return EditorConfig(**base)
 
 
-def _info(name, proj, *, weight=None, n=1, N=1, target_erank=None, total_erank=None):
-    """A LayerScaleInfo for hand-built EngramResults."""
+def _info(name, proj, *, weight=None, weight_fro=None, n=1, N=1, target_erank=None, total_erank=None):
+    """A LayerScaleInfo for hand-built EngramResults (pass a `weight` tensor or a `weight_fro` scalar)."""
+    if weight_fro is None:
+        weight_fro = float(weight.norm()) if weight is not None else 0.0
     return LayerScaleInfo(
         name=name,
-        weight=weight if weight is not None else torch.zeros_like(proj),
+        weight_fro=weight_fro,
         projection=proj,
         n=n,
         N=N,
@@ -414,6 +416,22 @@ def test_default_storage_follows_model_device():
         DataLoader(TensorDataset(torch.randn(32, 6)), batch_size=8)
     )
     assert cov["0"].device.type == "cpu"  # followed the (CPU) model
+
+
+# T12b: a selection that matches no supported layer warns instead of silently
+# producing an empty covariance (e.g. a target_modules typo).
+def test_no_match_warns():
+    import warnings
+
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 2, bias=False)).eval()
+    ed = EngramEditor(model, cpu_cfg())
+    loader = DataLoader(TensorDataset(torch.randn(8, 4)), batch_size=4)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cov = ed.collect_statistics(loader, target_modules=["does_not_exist"])
+    assert len(cov) == 0
+    assert any("no supported layers matched" in str(w.message) for w in caught)
 
 
 # --------------------------------------------------------------------------- #

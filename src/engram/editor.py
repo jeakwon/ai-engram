@@ -234,7 +234,13 @@ class EngramEditor:
             c_total = total_covariance[layer_name].to(dev, dtype=prec)
             n = int(target_covariances.count.get(layer_name, 0))
             N = int(total_covariance.count.get(layer_name, 0))
-            pinv_total = torch.linalg.pinv(c_total)
+            # pinv's rcond is load-bearing: float32's coarse singular-value cut discards the
+            # near-null directions of the ill-conditioned C_total (float64 keeps and
+            # 1/sigma-amplifies them -> catastrophic edit). Pin rtol to torch's own default
+            # formula (max(M,N) * eps) so this regularization is explicit and independent of
+            # any future change to the library's default tolerance. C_total is square (D x D).
+            rtol = c_total.shape[-1] * torch.finfo(prec).eps
+            pinv_total = torch.linalg.pinv(c_total, rtol=rtol)
             er_t = _erank(c_target) if compute_erank else None  # only effective_rank needs these
             er_a = _erank(c_total) if compute_erank else None
 
@@ -246,7 +252,7 @@ class EngramEditor:
                     continue
                 w = adapter.weight_for(layer_name, self.model)  # [out, in] (a Parameter slice)
                 result.layers[layer_name] = LayerScaleInfo(
-                    name=layer_name, weight=w.detach().clone(),  # snapshot (norms only)
+                    name=layer_name, weight_fro=float(w.float().norm()),  # scalar; full weight not retained
                     projection=w.to(dev, dtype=prec) @ c_target @ pinv_total,
                     n=n, N=N, target_erank=er_t, total_erank=er_a,
                 )
@@ -266,7 +272,7 @@ class EngramEditor:
             else:
                 proj = handler.to_weight_shape(full, module)
             result.layers[layer_name] = LayerScaleInfo(
-                name=layer_name, weight=module.weight.detach().clone(),  # snapshot: immune to later in-place edits
+                name=layer_name, weight_fro=float(module.weight.float().norm()),  # scalar; immune to later in-place edits
                 projection=proj, n=n, N=N, target_erank=er_t, total_erank=er_a,
             )
 
