@@ -7,8 +7,8 @@ abstract: >-
   training-free, no gradient descent.
 type: software
 authors:
-  - family-names: Kim
-    given-names: Jeakwon
+  - family-names: Kwon
+    given-names: Jea
 repository-code: "https://github.com/jeakwon/ai-engram"
 url: "https://jeakwon.github.io/ai-engram/"
 license: MIT
