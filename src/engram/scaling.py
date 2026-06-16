@@ -55,8 +55,8 @@ class LayerScaleInfo:
     """Per-layer inputs handed to a scaling function."""
 
     name: str
-    weight: torch.Tensor       # W_l, in module.weight shape (a reference to the param)
-    projection: torch.Tensor   # P_l = W . C_target . pinv(C_total), same shape as weight
+    weight_fro: float          # ||W_l||_F (scalar); the full weight tensor is not retained — see weight_norm
+    projection: torch.Tensor   # P_l = W . C_target . pinv(C_total), in module.weight shape
     n: int                     # target sample count
     N: int                     # total sample count
     target_erank: Optional[float] = None  # effective rank of C_target — only set for effective_rank
@@ -105,7 +105,7 @@ def weight_norm(power: float = 1.0) -> ScaleFn:
 
     def fn(infos: Dict[str, LayerScaleInfo]) -> Dict[str, float]:
         rel = {
-            k: i.projection.norm().item() / (i.weight.norm().item() + _EPS)
+            k: i.projection.norm().item() / (i.weight_fro + _EPS)
             for k, i in infos.items()
         }
         mx = max(rel.values(), default=1.0) or 1.0

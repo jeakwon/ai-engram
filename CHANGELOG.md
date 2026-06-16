@@ -4,6 +4,27 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [Unreleased]
+
+### Changed
+- **`LayerScaleInfo` carries `weight_fro` (a scalar) instead of `weight` (a tensor).**
+  `compute_engram_weights` no longer clones every layer's full weight into the
+  `EngramResult` — it stores only `‖W_l‖_F`, the one thing a scaling function needs.
+  This removes a model-sized allocation from each result (the default `count_ratio`
+  never read the weight; `weight_norm` only used its norm), avoiding an OOM on large
+  models. **Breaking** (pre-1.0) for custom scaling functions that read
+  `LayerScaleInfo.weight` → use `.weight_fro`.
+- **`pinv` now uses an explicit `rtol`.** `compute_engram_weights` pins the float32
+  singular-value cut to `D · eps_float32` (PyTorch's own default formula), so the
+  regularization that makes the ill-conditioned solve work is explicit in the code and
+  independent of any future change to the library default. Numerically identical to
+  before — verified bit-for-bit across torch 2.6 and 2.12.
+
+### Added
+- **No-match warning.** `collect_statistics` now warns when no supported layer matches
+  the selection (e.g. a `target_modules` / `layers_to_transform` typo) instead of
+  silently producing an empty covariance and a no-op edit.
+
 ## [0.7.0] — 2026-06-13
 
 ### Added

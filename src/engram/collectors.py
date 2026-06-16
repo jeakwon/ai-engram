@@ -18,6 +18,7 @@ the routing mask just computed. This is automatic and a no-op for dense models.
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
@@ -210,6 +211,19 @@ class CovarianceCollector:
         # have no per-expert module for the loop above to find). No-op if none.
         for adapter in self.adapters:
             adapter.attach(self)
+
+        # Nothing matched -> the covariance would be silently empty (and the edit a
+        # no-op). Almost always a target_modules / layers_to_transform typo, or a
+        # selection that only hit non-hookable types (e.g. LayerNorm). Warn early,
+        # before iterating the whole dataloader for nothing.
+        if not self.covariance_matrices:
+            warnings.warn(
+                "CovarianceCollector: no supported layers matched the selection, so the "
+                "covariance is empty and any resulting edit is a no-op. Check target_modules / "
+                "layers_to_transform (a typo?), or whether the matched modules are hookable "
+                "(nn.Linear / Conv1D / fused-MoE experts via engram.moe).",
+                stacklevel=3,
+            )
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
