@@ -4,7 +4,7 @@ The public surface of the `engram` package, generated from the source docstrings
 
 ```python
 from engram import (
-    EditorConfig, EngramEditor, edit_llm,
+    EditorConfig, EngramEditor, edit_llm, get_engram, apply_engram,
     CovarianceCollector, Statistics,
     EngramResult, LayerScaleInfo,
     count_ratio, weight_norm, effective_rank, uniform, compose,
@@ -17,6 +17,10 @@ from engram import (
 ::: engram.EngramEditor
 
 ::: engram.edit_llm
+
+::: engram.get_engram
+
+::: engram.apply_engram
 
 ::: engram.LinearHandler
 

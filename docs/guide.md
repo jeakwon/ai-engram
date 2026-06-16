@@ -218,6 +218,26 @@ over the **answer** tokens only — the prompt is masked). `total` is the refere
 through: `alpha`, `scale=`, `target_modules`, `layers_to_transform`, `max_length`,
 `batch_size`, `inplace`. No chat template is applied — pre-format prompts yourself.
 
+### Tuning `alpha` without recollecting
+
+`edit_llm` is exactly `get_engram` (the **expensive** half — tokenize + collect + one
+pseudo-inverse per layer) followed by `apply_engram` (the **cheap** half — a copy + one
+subtraction per layer). Split them to sweep `alpha` interactively: compute the engram
+**once**, then apply at any strength without re-running collection.
+
+```python
+from engram import get_engram, apply_engram
+
+engram = get_engram(model, tokenizer, forget=forget, total=forget + retain)  # once (pinv here)
+for a in (0.2, 0.4, 0.6, 0.8, 1.0):
+    edited = apply_engram(model, engram, alpha=a)      # cheap; no recollection
+    ...                                                # measure forget vs retain, pick alpha
+```
+
+`apply_engram(..., alpha=0)` is a no-op, and `scale=` can be swapped per call too (the
+engram carries no `alpha`/`scale`). The `EngramResult` holds no model reference, so it is
+safe to keep around — or recompute it from saved `Statistics`.
+
 !!! note "Try it on your model (demo)"
     Engram editing *removes memorized knowledge*, so the effect is strongest on facts the
     model actually learned. A quick before/after check on any LM:

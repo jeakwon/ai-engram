@@ -21,6 +21,12 @@ All notable changes to **ai-engram** are documented here. The format follows
   before — verified bit-for-bit across torch 2.6 and 2.12.
 
 ### Added
+- **`get_engram` / `apply_engram`** — `edit_llm` split into its expensive half
+  (`get_engram`: tokenize + collect + one pinv/layer → an `alpha`-free `EngramResult`)
+  and its cheap half (`apply_engram(model, engram, alpha=…)`: a copy + one subtraction
+  per layer). Compute the engram once, then sweep `alpha` / `scale` interactively without
+  recollecting. `edit_llm` is now exactly `get_engram` + `apply_engram` (behavior
+  unchanged); all three gained an `adapters=` passthrough for fused-MoE.
 - **No-match warning.** `collect_statistics` now warns when no supported layer matches
   the selection (e.g. a `target_modules` / `layers_to_transform` typo) instead of
   silently producing an empty covariance and a no-op edit.

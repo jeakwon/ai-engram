@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from engram import EditorConfig, EngramEditor, edit_llm, uniform
+from engram import EditorConfig, EngramEditor, apply_engram, edit_llm, get_engram, uniform
 
 
 class _FakeTok:
@@ -95,3 +95,40 @@ def test_edit_llm_matches_manual_pipeline():
     md, dd = dict(manual.named_parameters()), dict(direct.named_parameters())
     for n in md:
         assert torch.allclose(md[n], dd[n], atol=1e-5), n
+
+
+def test_get_engram_then_apply_engram_matches_edit_llm():
+    # the split (get_engram once + apply_engram) reproduces the one-call edit_llm
+    tok, model = _FakeTok(), _tiny_gpt2()
+    forget, total = ["aa bb", "cc dd ee"], ["aa bb", "cc dd ee", "ff gg"]
+    cfg = _cpu_cfg()
+
+    engram = get_engram(model, tok, forget, total, config=cfg)
+    split = apply_engram(model, engram, alpha=0.7, scale=uniform())
+    direct = edit_llm(model, tok, forget, total, alpha=0.7, scale=uniform(), config=cfg)
+
+    sd, dd = dict(split.named_parameters()), dict(direct.named_parameters())
+    for n in sd:
+        assert torch.allclose(sd[n], dd[n], atol=1e-5), n
+
+
+def test_apply_engram_reuses_engram_and_alpha_zero_is_noop():
+    # compute once, apply at several alphas (no recollection); alpha=0 is a no-op
+    tok, model = _FakeTok(), _tiny_gpt2()
+    W0 = {n: p.detach().clone() for n, p in model.named_parameters()}
+    forget, total = ["aa bb", "cc dd ee"], ["aa bb", "cc dd ee", "ff gg"]
+
+    engram = get_engram(model, tok, forget, total, config=_cpu_cfg())
+
+    e0 = apply_engram(model, engram, alpha=0.0, scale=uniform())   # alpha=0 -> unchanged
+    for n, p in e0.named_parameters():
+        assert torch.allclose(p, W0[n], atol=1e-6), n
+
+    small = dict(apply_engram(model, engram, alpha=0.3, scale=uniform()).named_parameters())
+    big = dict(apply_engram(model, engram, alpha=0.9, scale=uniform()).named_parameters())
+    changed = [n for n in W0 if not torch.allclose(W0[n], big[n], atol=1e-6)]
+    assert changed, "apply_engram changed nothing"
+    n0 = changed[0]                                                # bigger alpha -> larger deviation
+    assert (big[n0] - W0[n0]).norm() > (small[n0] - W0[n0]).norm()
+    for n, p in model.named_parameters():                          # original model untouched
+        assert torch.equal(p, W0[n]), n
