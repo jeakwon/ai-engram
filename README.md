@@ -47,6 +47,8 @@ Pulls `torch`, `tqdm`, and `transformers` — HF LLMs and GPT-2 work out of the 
 
 ## Quickstart
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jeakwon/ai-engram/blob/main/examples/quick_ai_engram_qwen3.ipynb) — run the unlearning quickstart on **Qwen3-0.6B** end-to-end in Colab, no local setup.
+
 Any `nn.Linear` (or GPT-2 `Conv1D`) model:
 
 ```python
