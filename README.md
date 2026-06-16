@@ -47,52 +47,51 @@ Pulls `torch`, `tqdm`, and `transformers` — HF LLMs and GPT-2 work out of the 
 
 ## Quickstart
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jeakwon/ai-engram/blob/main/examples/quick_ai_engram_qwen3.ipynb) — run the unlearning quickstart on **Qwen3-0.6B** end-to-end in Colab, no local setup.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/jeakwon/ai-engram/blob/main/examples/quick_ai_engram_qwen3.ipynb) — the snippet below runs end-to-end on **Qwen3-0.6B** (ungated, ~1.2 GB) in Colab, no local setup.
 
-Any `nn.Linear` (or GPT-2 `Conv1D`) model:
+```bash
+pip install -U ai-engram          # pulls torch + transformers
+```
 
 ```python
 import torch
-from engram import EngramEditor, EditorConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from engram import get_engram, apply_engram
 
-editor = EngramEditor(model, EditorConfig())
+model_id = "Qwen/Qwen3-0.6B"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id).to(device).eval()
 
-target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
-total  = editor.collect_statistics(total_loader)    # over the reference set
+forget = [                                   # unlearn the Eiffel-Tower↔Paris fact (a few phrasings)
+    "The Eiffel Tower is located in Paris, France.",
+    "Paris is home to the Eiffel Tower.",
+    "You can see the Eiffel Tower when you visit Paris.",
+]
+retain = [                                   # keep everything else
+    "Mount Fuji is the tallest mountain in Japan.",
+    "The Colosseum is an ancient amphitheater in Rome.",
+    "Water freezes at zero degrees Celsius.",
+]
 
-edited = editor.edit(target, total, alpha=1.0)      # compute the engram and subtract it
-# or split it: engram = editor.compute_engram_weights(target, total); editor.apply(engram, alpha=0.6)
+engram = get_engram(model, tokenizer, forget=forget, total=forget + retain)  # collect once (the pinv)
+edited = apply_engram(model, engram, alpha=0.6)        # cheap — sweep alpha freely, no recollecting
 ```
 
-### HuggingFace LLM (answer-token masked)
+See it forget — generate before vs after:
 
 ```python
-from engram import EngramEditor, EditorConfig
+@torch.no_grad()
+def ask(m, q):
+    ids = tokenizer.apply_chat_template([{"role": "user", "content": q}], add_generation_prompt=True,
+                                        enable_thinking=False, return_tensors="pt").to(device)
+    return tokenizer.decode(m.generate(ids, max_new_tokens=32)[0, ids.shape[1]:], skip_special_tokens=True)
 
-editor = EngramEditor(model, EditorConfig())
-
-batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
-mask_fn  = lambda b: b["labels"] != -100           # covariance over answer tokens only
-
-g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
-g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
-
-edited = editor.edit(g_forget, g_total, alpha=0.6)   # default scaling = the paper's n/N
-# selective per-layer strength, e.g. by relative weight-norm:
-#   from engram import weight_norm, compose, count_ratio
-#   edited = editor.edit(g_forget, g_total, alpha=1.0, scale=compose(count_ratio(1.0), weight_norm(1.0)))
+print("before:", ask(model,  "Where is the Eiffel Tower?"))
+print("after :", ask(edited, "Where is the Eiffel Tower?"))
 ```
 
-Restrict the edit to specific modules with `target_modules` — the same convention
-as LoRA/PEFT (`["down_proj"]` by name suffix, or a regex string), plus
-`layers_to_transform` for decoder-layer indices. See the
-[Quickstart guide](https://jeakwon.github.io/ai-engram/quickstart/) for details.
-
-**Mixture-of-experts.** Answer-token masking reaches the experts automatically on
-transformers&nbsp;<5; on transformers&nbsp;≥5 (fused experts) opt in to the
-detachable `engram.moe` adapter — `EngramEditor(model, adapters=[FusedExpertAdapter()])` —
-covering ~35 fused MoE architectures (Mixtral, Qwen2/3/3.5-MoE, DeepSeek-V3,
-GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …).
+`get_engram` runs the expensive part once; `apply_engram(model, engram, alpha=…)` is just a copy + subtraction, so you can sweep `alpha` to trade off forgetting vs retention without recollecting. One call does both: `edit_llm(model, tokenizer, forget=forget, total=forget + retain, alpha=0.6)`.
 
 ## How it works
 
@@ -110,6 +109,38 @@ Efficient by construction — forward-only hooks, magnitude-bounded running-mean
 |---|---|---|
 | `storage_device` | model's device | where covariances are held; set `"cpu"` if the `D×D` matrices don't fit in VRAM (large models) |
 | `absorb_bias` | `True` | absorb bias into the edit for bias-bearing layers |
+
+## Using the editor directly
+
+With your own `DataLoader`s (any `nn.Linear` / GPT-2 `Conv1D` model), drive the editor in three steps — collect, compute, apply:
+
+```python
+from engram import EngramEditor, EditorConfig
+
+editor = EngramEditor(model, EditorConfig())
+target = editor.collect_statistics(forget_loader)   # Statistics: mean covariance + counts
+total  = editor.collect_statistics(total_loader)    # over the reference set
+edited = editor.edit(target, total, alpha=1.0)      # compute the engram and subtract it
+# or split: engram = editor.compute_engram_weights(target, total); editor.apply(engram, alpha=0.6)
+```
+
+**HuggingFace LLM (answer-token masked).** Restrict the covariance to answer tokens with `mask_fn`:
+
+```python
+batch_fn = lambda b: {"input_ids": b["input_ids"], "attention_mask": b["attention_mask"]}
+mask_fn  = lambda b: b["labels"] != -100            # covariance over answer tokens only
+
+g_forget = editor.collect_statistics(forget_loader, batch_fn=batch_fn, mask_fn=mask_fn)
+g_total  = editor.collect_statistics(total_loader,  batch_fn=batch_fn, mask_fn=mask_fn)
+edited = editor.edit(g_forget, g_total, alpha=0.6)  # default scaling = the paper's n/N
+# selective per-layer strength:
+#   from engram import weight_norm, compose, count_ratio
+#   edited = editor.edit(g_forget, g_total, alpha=1.0, scale=compose(count_ratio(1.0), weight_norm(1.0)))
+```
+
+Restrict to specific modules with `target_modules` — the LoRA/PEFT convention (`["down_proj"]` by name suffix, or a regex string) — plus `layers_to_transform` for decoder-layer indices. See the [Guide](https://jeakwon.github.io/ai-engram/guide/) for details.
+
+**Mixture-of-experts.** Answer-token masking reaches the experts automatically on transformers&nbsp;<5; on transformers&nbsp;≥5 (fused experts) opt in to the detachable `engram.moe` adapter — `EngramEditor(model, adapters=[FusedExpertAdapter()])` — covering ~35 fused MoE architectures (Mixtral, Qwen2/3/3.5-MoE, DeepSeek-V3, GLM4-MoE, MiniMax, Mistral4, OLMoE, Phi-MoE, …).
 
 ## Validation
 
