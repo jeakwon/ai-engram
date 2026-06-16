@@ -3,6 +3,9 @@
 Minimal, efficient **covariance-based engram extraction** for editing neural
 networks — built for HuggingFace causal LLMs.
 
+!!! quote "Paper — ICML 2026 (Oral)"
+    Reference implementation of **[AI Engram: In Search of Memory Traces in Artificial Intelligence](https://arxiv.org/abs/2606.14997)** — Kwon, Kim, Kim, Kim, Kook & Cha. See [Citation](#citation) for BibTeX.
+
 An *engram* is the component of a layer's weights attributable to a target set of
 inputs. `ai-engram` isolates it in **closed form** (no gradient descent), from
 forward-only covariance statistics:
@@ -61,3 +64,23 @@ See the [Quickstart](quickstart.md) for HuggingFace LLMs and answer-token maskin
 - [Guide](guide.md) — the method, configuration, efficiency, and design in depth
 - [API reference](api.md)
 - [TOFU validation](tofu.md) — reproducing unlearning results
+
+## Citation
+
+`ai-engram` is the reference implementation of **[AI Engram: In Search of Memory
+Traces in Artificial Intelligence](https://arxiv.org/abs/2606.14997)**, accepted to
+**ICML 2026 (Oral)**. If you use it, please cite:
+
+```bibtex
+@inproceedings{kwon2026aiengram,
+  title     = {{AI} Engram: In Search of Memory Traces in Artificial Intelligence},
+  author    = {Kwon, Jea and Kim, Dong-Kyum and Kim, Jiwon and Kim, Yonghyun and Kook, Woong and Cha, Meeyoung},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
+  year      = {2026},
+  note      = {Oral presentation},
+  eprint    = {2606.14997},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url       = {https://arxiv.org/abs/2606.14997}
+}
+```
