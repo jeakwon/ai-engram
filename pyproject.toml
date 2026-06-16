@@ -9,7 +9,7 @@ description = "Minimal, efficient covariance-based engram extraction for editing
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Jeakwon Kim" }]
+authors = [{ name = "Jea Kwon" }]
 keywords = ["model-editing", "unlearning", "llm", "engram", "covariance", "pytorch", "transformers"]
 classifiers = [
     "Programming Language :: Python :: 3",

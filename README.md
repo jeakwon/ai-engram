@@ -147,4 +147,4 @@ GitHub's *“Cite this repository”* button generates this from [`CITATION.cff`
 
 ## License
 
-[MIT](https://github.com/jeakwon/ai-engram/blob/main/LICENSE) © Jeakwon Kim
+[MIT](https://github.com/jeakwon/ai-engram/blob/main/LICENSE) © Jea Kwon
