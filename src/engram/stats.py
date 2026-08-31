@@ -21,7 +21,48 @@ from typing import Dict, Iterator, Union
 
 import torch
 
-_FORMAT = 2  # on-disk tag; the legacy unreleased "sum-only dict" (no tag) is rejected on load
+_FORMAT = 3  # on-disk tag; format 2 (dense) still loads; the legacy untagged "sum-only dict" is rejected
+_FORMAT_DENSE = 2
+
+
+_SYM_RTOL = 1e-5  # pack only when max|C - C^T| <= _SYM_RTOL * max|C| (fp accumulation noise passes)
+
+
+def _pack_symmetric(c: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """Pack a symmetric ``[D, D]`` matrix into its upper triangle (diagonal included).
+
+    The upper triangle is stored bit-exactly; the (numerically identical) lower
+    triangle is reconstructed by mirroring on load. Storage: ``D(D+1)/2`` values
+    instead of ``D**2`` — a hair over half. A matrix that is *not* symmetric within
+    ``_SYM_RTOL`` (relative) is stored dense unchanged, so arbitrary contents
+    round-trip exactly.
+    """
+    if c.dim() != 2 or c.shape[0] != c.shape[1]:
+        return {"dense": c.detach().cpu()}
+    asym = (c - c.mT).abs().max()
+    if asym > _SYM_RTOL * c.abs().max().clamp_min(torch.finfo(c.dtype).tiny):
+        return {"dense": c.detach().cpu()}
+    # Pack on the host: torch.triu_indices allocates an int64 [2, D(D+1)/2] tensor, twice the
+    # bytes of a float32 covariance, and doing that on the covariance's own device OOMs a GPU
+    # exactly when the matrix is large enough for packing to matter. torch.save copies CUDA
+    # storages to host anyway, so moving first costs nothing.
+    c = c.detach().cpu()
+    d = c.shape[-1]
+    iu = torch.triu_indices(d, d)
+    return {"packed": c[iu[0], iu[1]].contiguous(), "dim": torch.tensor(d)}
+
+
+def _unpack_symmetric(entry: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Rebuild the full matrix on the host, for the same index-tensor reason as packing."""
+    if "dense" in entry:
+        return entry["dense"]
+    d = int(entry["dim"])
+    p = entry["packed"].cpu()
+    iu = torch.triu_indices(d, d)
+    full = torch.empty(d, d, dtype=p.dtype)
+    full[iu[0], iu[1]] = p
+    full[iu[1], iu[0]] = p
+    return full
 
 
 @dataclass
@@ -87,9 +128,22 @@ class Statistics:
                 count[k] = total
         return Statistics(cov, count)
 
-    def save(self, path: Union[str, Path]) -> None:
-        """Save with ``torch.save`` (tagged ``format=2``)."""
-        torch.save({"format": _FORMAT, "cov": self.cov, "count": self.count}, path)
+    def save(self, path: Union[str, Path], *, packed: bool = True) -> None:
+        """Save with ``torch.save``.
+
+        ``packed=True`` (default, tag ``format=3``) stores each covariance as its
+        upper triangle only — the matrices are symmetric, so this halves the file
+        with the upper triangle preserved bit-exactly. ``packed=False`` writes the
+        dense ``format=2`` layout for compatibility with older readers.
+        """
+        if packed:
+            # one layer at a time, so only a single packed copy is live at once
+            packed_cov = {}
+            for k, v in self.cov.items():
+                packed_cov[k] = _pack_symmetric(v)
+            torch.save({"format": _FORMAT, "cov_packed": packed_cov, "count": self.count}, path)
+        else:
+            torch.save({"format": _FORMAT_DENSE, "cov": self.cov, "count": self.count}, path)
 
     @staticmethod
     def load(
@@ -97,10 +151,17 @@ class Statistics:
     ) -> "Statistics":
         """Load a :class:`Statistics`. Rejects the legacy raw-covariance dict format."""
         obj = torch.load(path, map_location=map_location, weights_only=True)
-        if not (isinstance(obj, dict) and obj.get("format") == _FORMAT and "cov" in obj):
-            raise ValueError(
-                f"{path!r} is not a Statistics file (format={_FORMAT}). It looks like a "
-                "legacy raw-covariance dict; re-collect with EngramEditor.collect_statistics() "
-                "— the mean+count format cannot be reconstructed from summed covariances."
-            )
-        return Statistics(obj["cov"], obj["count"])
+        if isinstance(obj, dict) and obj.get("format") == _FORMAT and "cov_packed" in obj:
+            # unpack on the host, then honour map_location
+            cov = {k: _unpack_symmetric(v) for k, v in obj["cov_packed"].items()}
+            if map_location is not None:
+                cov = {k: v.to(map_location) for k, v in cov.items()}
+            return Statistics(cov, obj["count"])
+        if isinstance(obj, dict) and obj.get("format") == _FORMAT_DENSE and "cov" in obj:
+            return Statistics(obj["cov"], obj["count"])
+        raise ValueError(
+            f"{path!r} is not a Statistics file (format={_FORMAT} packed or "
+            f"{_FORMAT_DENSE} dense). It looks like a legacy raw-covariance dict; "
+            "re-collect with EngramEditor.collect_statistics() — the mean+count "
+            "format cannot be reconstructed from summed covariances."
+        )
