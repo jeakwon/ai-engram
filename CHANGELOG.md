@@ -4,6 +4,16 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [Unreleased]
+
+### Added
+- Packed symmetric statistics storage (on-disk `format=3`, now the default): covariance
+  matrices are symmetric, so `Statistics.save` stores only the upper triangle
+  (diagonal included) — exactly half the bytes, upper triangle bit-exact, lower
+  triangle mirrored on load. Dense `format=2` files still load; `save(path, packed=False)`
+  still writes them. Non-symmetric entries fall back to dense storage automatically,
+  so arbitrary contents round-trip bit-exactly.
+
 ## [0.8.0] — 2026-06-16
 
 ### Changed
