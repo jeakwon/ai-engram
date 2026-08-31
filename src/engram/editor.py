@@ -26,7 +26,7 @@ from .config import EditorConfig
 from .handlers import Conv1DHandler, LinearHandler, get_conv1d_class, handler_for
 from .scaling import EngramResult, LayerScaleInfo, ScaleFn, _erank, count_ratio
 from .stats import Statistics
-from .inverse import default_rtol, spectral_factors, spectral_pinv
+from .inverse import default_rtol, spectral_factors
 
 logger = logging.getLogger("engram")
 
@@ -282,6 +282,10 @@ class EngramEditor:
             # the operator being solved.
             rtol = None if condition_cap is not None else default_rtol(c_total.shape[-1])
             u_k = inv_lam = None
+            if inverse_method not in ("eigh", "svd"):
+                raise ValueError(f"inverse_method must be 'eigh' or 'svd', got {inverse_method!r}")
+            if condition_cap is not None and condition_cap <= 1.0:
+                raise ValueError(f"condition_cap must be > 1, got {condition_cap}")
             if inverse_method == "svd":
                 if rank_fraction is not None:
                     raise ValueError("rank_fraction requires inverse_method='eigh'")

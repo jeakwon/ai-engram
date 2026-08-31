@@ -4,15 +4,57 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.9.0] — 2026-08-31
+
+Performance release: the engram computed an order of magnitude faster and stored in half the
+space, with a result that no longer shifts between runs, solvers or dtypes. The edit itself moves
+by 0.43% on average — see below for what that is and why it is not the algorithm changing.
+
+### Changed
+
+- **The pseudo-inverse is computed from a float64 symmetric eigendecomposition instead of
+  `torch.linalg.pinv`'s SVD.** The covariances are symmetric PSD, so the eigendecomposition and the SVD
+  agree in exact arithmetic; in float32 the two differ where the cut lands, which is why the
+  decomposition now runs in float64 (below). Measured on an H100: **10.6x faster at
+  D=1024, 30x at D=4096, 65.7x at D=18432**, and **11.6x end-to-end** on the TOFU
+  Llama-3.2-1B model (113 layers: 158.5 s → 13.6 s). The projection differs from the old path by
+  0.43% on average, and TOFU unlearning is unchanged within evaluation noise (forget-NLL rise
+  2.030 → 2.023, retain 0.446 → 0.443). `inverse_method="svd"` restores the previous code path.
+- **The singular-value cut no longer follows the dtype.** It was
+  `D * torch.finfo(precision).eps`, which meant switching the covariance to float64 moved the
+  regularization threshold nine orders of magnitude and 1/sigma-amplified pure noise — the
+  algorithm changed with the storage format. The cut is now pinned to `D * eps_float32` as a
+  constant (`engram.inverse.default_rtol`), so float32 and float64 solve the same problem, and
+  the decomposition runs in float64 so that solving it is deterministic: **0 keep-set mismatches
+  and 0.000000 relative difference between eigh and SVD, where float32 disagrees by ~2%**
+  (the eigenvalues nearest the cut carry ~1e-7 float32 error, and their `1/lambda` is ~1/rtol,
+  so a single borderline direction moves the projection by percent). On a per-layer micro-benchmark float64 cost ~14% more than
+  float32; end-to-end the difference was inside run-to-run noise (13.6 s vs 14.3 s for 113
+  layers, float64 the faster of the two).
+- **`Statistics.save` writes the upper triangle only (on-disk `format=3`).** Covariances are
+  symmetric, so this stores `D(D+1)/2` of `D^2` values — just over half in principle,
+  0.500x in practice at D=4096 once file overhead is counted — with the upper triangle
+  preserved bit-for-bit, and 5.92 GB → 2.96 GB for the TOFU Llama-3.2-1B statistics.
+  **Breaking:** older ai-engram versions cannot read `format=3` files; write `format=2` with
+  `save(path, packed=False)`. Reading is backward compatible — 0.9.0 loads both, and still
+  rejects the legacy untagged dict. Entries that are not symmetric within 1e-5 fall back to
+  dense storage inside the same file, so arbitrary contents round-trip exactly.
+- **The projection applies the inverse in factored form**, so the `D x D` inverse is never
+  materialized — 2.6 GB less per layer at `D=25600`.
 
 ### Added
-- Packed symmetric statistics storage (on-disk `format=3`, now the default): covariance
-  matrices are symmetric, so `Statistics.save` stores only the upper triangle
-  (diagonal included) — exactly half the bytes, upper triangle bit-exact, lower
-  triangle mirrored on load. Dense `format=2` files still load; `save(path, packed=False)`
-  still writes them. Non-symmetric entries fall back to dense storage automatically,
-  so arbitrary contents round-trip bit-exactly.
+
+- `engram.inverse` — `spectral_factors` / `spectral_pinv` / `default_rtol`, with opt-in cut
+  criteria: `rank_fraction` (keep the top `f*D` directions), `condition_cap` (one condition-number
+  cap for every layer, instead of the width-dependent default), `cut="energy"` (keep a fraction of
+  the trace), `cut="ridge"` (Tikhonov damping instead of truncation, `ridge_delta` relative to
+  `lambda_max`), and
+  `inverse_solver="randomized"` (top-k only, `O(D^2 k)` — worth it below `f ~ 0.1`).
+- `engram.rmt` — Marchenko-Pastur effective rank (`mp_rank`, `mp_rank_fitted`), exposed through
+  `cut="mp"`. Covered by `tests/test_inverse.py::test_mp_rank_recovers_planted_spikes`, which
+  recovers the exact number of planted directions (and reports none for pure noise).
+- All of the above default to **off**: on TOFU, none of the alternative criteria beats the
+  historical cut at matched edit strength, so the shipped behaviour is unchanged.
 
 ## [0.8.0] — 2026-06-16
 

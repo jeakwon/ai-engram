@@ -38,22 +38,28 @@ def _pack_symmetric(c: torch.Tensor) -> Dict[str, torch.Tensor]:
     round-trip exactly.
     """
     if c.dim() != 2 or c.shape[0] != c.shape[1]:
-        return {"dense": c}
+        return {"dense": c.detach().cpu()}
     asym = (c - c.mT).abs().max()
     if asym > _SYM_RTOL * c.abs().max().clamp_min(torch.finfo(c.dtype).tiny):
-        return {"dense": c}
+        return {"dense": c.detach().cpu()}
+    # Pack on the host: torch.triu_indices allocates an int64 [2, D(D+1)/2] tensor, twice the
+    # bytes of a float32 covariance, and doing that on the covariance's own device OOMs a GPU
+    # exactly when the matrix is large enough for packing to matter. torch.save copies CUDA
+    # storages to host anyway, so moving first costs nothing.
+    c = c.detach().cpu()
     d = c.shape[-1]
-    iu = torch.triu_indices(d, d, device=c.device)
+    iu = torch.triu_indices(d, d)
     return {"packed": c[iu[0], iu[1]].contiguous(), "dim": torch.tensor(d)}
 
 
 def _unpack_symmetric(entry: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Rebuild the full matrix on the host, for the same index-tensor reason as packing."""
     if "dense" in entry:
         return entry["dense"]
     d = int(entry["dim"])
-    p = entry["packed"]
-    iu = torch.triu_indices(d, d, device=p.device)
-    full = torch.empty(d, d, dtype=p.dtype, device=p.device)
+    p = entry["packed"].cpu()
+    iu = torch.triu_indices(d, d)
+    full = torch.empty(d, d, dtype=p.dtype)
     full[iu[0], iu[1]] = p
     full[iu[1], iu[0]] = p
     return full
@@ -131,14 +137,11 @@ class Statistics:
         dense ``format=2`` layout for compatibility with older readers.
         """
         if packed:
-            torch.save(
-                {
-                    "format": _FORMAT,
-                    "cov_packed": {k: _pack_symmetric(v) for k, v in self.cov.items()},
-                    "count": self.count,
-                },
-                path,
-            )
+            # one layer at a time, so only a single packed copy is live at once
+            packed_cov = {}
+            for k, v in self.cov.items():
+                packed_cov[k] = _pack_symmetric(v)
+            torch.save({"format": _FORMAT, "cov_packed": packed_cov, "count": self.count}, path)
         else:
             torch.save({"format": _FORMAT_DENSE, "cov": self.cov, "count": self.count}, path)
 
@@ -149,7 +152,10 @@ class Statistics:
         """Load a :class:`Statistics`. Rejects the legacy raw-covariance dict format."""
         obj = torch.load(path, map_location=map_location, weights_only=True)
         if isinstance(obj, dict) and obj.get("format") == _FORMAT and "cov_packed" in obj:
+            # unpack on the host, then honour map_location
             cov = {k: _unpack_symmetric(v) for k, v in obj["cov_packed"].items()}
+            if map_location is not None:
+                cov = {k: v.to(map_location) for k, v in cov.items()}
             return Statistics(cov, obj["count"])
         if isinstance(obj, dict) and obj.get("format") == _FORMAT_DENSE and "cov" in obj:
             return Statistics(obj["cov"], obj["count"])

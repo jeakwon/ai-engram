@@ -198,3 +198,27 @@ def test_deterministic_across_calls():
     a1, b1 = spectral_factors(c)
     a2, b2 = spectral_factors(c)
     assert torch.equal(a1, a2) and torch.equal(b1, b2)
+
+
+# T14: the Marchenko-Pastur rank recovers planted signal directions and reports none when there
+# is no signal — the claim the CHANGELOG makes for engram.rmt.
+@pytest.mark.parametrize("d,n,spikes", [(500, 5000, 0), (500, 5000, 5), (300, 900, 3)])
+def test_mp_rank_recovers_planted_spikes(d, n, spikes):
+    from engram.rmt import mp_rank, mp_rank_fitted
+
+    g = torch.Generator().manual_seed(0)
+    x = torch.randn(n, d, generator=g, dtype=torch.float64)
+    if spikes:
+        v = torch.linalg.qr(torch.randn(d, spikes, generator=g, dtype=torch.float64))[0]
+        x = x + (torch.randn(n, spikes, generator=g, dtype=torch.float64) * 8.0) @ v.T
+    lam = torch.linalg.eigvalsh(x.T @ x / n).flip(0)
+    assert mp_rank(lam, n)[0] == spikes
+    assert mp_rank_fitted(lam)[0] == spikes
+
+
+# T15: 'gap' was measured worse than the default on both axes and is not shipped.
+def test_unknown_cut_and_method_rejected():
+    c = _psd(d=16).float()
+    for kw in (dict(cut="gap"), dict(cut="nonsense"), dict(method="nonsense")):
+        with pytest.raises(ValueError):
+            spectral_factors(c, **kw)

@@ -55,7 +55,6 @@ def spectral_factors(
     compute_dtype: Optional[torch.dtype] = torch.float64,
     energy_fraction: float = 0.99,
     ridge_delta: float = 1e-6,
-    gap_window: float = 4.0,
     n_samples: Optional[int] = None,
     oversample: int = 16,
     n_iter: int = 4,
@@ -101,6 +100,8 @@ def spectral_factors(
     if rank_fraction is not None and not 0.0 < rank_fraction <= 1.0:
         raise ValueError(f"rank_fraction must be in (0, 1], got {rank_fraction}")
 
+    if method not in ("exact", "randomized"):
+        raise ValueError(f"method must be 'exact' or 'randomized', got {method!r}")
     if method == "randomized":
         if rank_fraction is None:
             raise ValueError("method='randomized' requires rank_fraction")
@@ -145,23 +146,6 @@ def spectral_factors(
         keep = torch.zeros_like(lam, dtype=torch.bool)
         keep[:k_mp] = True
         keep &= lam > 0
-    elif cut == "gap":
-        # Truncate like `rtol`, but slide the cut to the widest spectral gap inside a window
-        # around the nominal threshold. The gap acts as a buffer, so fp noise in either solver
-        # cannot flip the keep-set — faithful to the truncation semantics, but stable.
-        nominal = rtol * lam_max
-        lo, hi = nominal / gap_window, nominal * gap_window
-        pos = lam > 0
-        idx = torch.nonzero((lam >= lo) & (lam <= hi) & pos, as_tuple=True)[0]
-        if idx.numel() >= 2:
-            seg = lam[idx]
-            ratios = seg[:-1] / seg[1:].clamp_min(torch.finfo(lam.dtype).tiny)
-            j = int(torch.argmax(ratios))
-            thresh = seg[j + 1] * 1.0  # cut just below the widest gap
-            keep = lam >= thresh
-        else:
-            keep = lam > nominal
-        keep &= pos
     elif cut == "energy":
         # Keep the smallest prefix carrying `energy_fraction` of the trace. A criterion on a
         # smooth cumulative sum rather than a threshold comparison inside a dense spectrum.
