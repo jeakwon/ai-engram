@@ -144,6 +144,35 @@ class Statistics:
                 count[k] = total
         return Statistics(cov, count)
 
+    def dedupe(self) -> "Statistics":
+        """Collapse bit-identical covariances onto one tensor each.
+
+        Layers fed by the same input — ``q``/``k``/``v`` off one LayerNorm, ``gate``/``up`` off
+        the other — accumulate covariances that are equal to the last bit. Sharing one tensor
+        between them costs nothing (they are read-only from here on) and saves that fraction of
+        memory, file size and eigendecompositions.
+
+        This runs *after* collection rather than during it, so the accumulation itself stays
+        exactly what it was: every layer folds every batch it saw, with its own count. Only
+        tensors that are already identical, and whose counts agree, are merged.
+        """
+        by_shape: Dict[Any, List[str]] = {}
+        for name, c in self.cov.items():
+            by_shape.setdefault((tuple(c.shape), c.dtype, c.device, self.count.get(name)), []).append(name)
+        cov = dict(self.cov)
+        for names in by_shape.values():
+            if len(names) < 2:
+                continue
+            canon: List[str] = []
+            for name in names:
+                for c0 in canon:
+                    if cov[name] is cov[c0] or torch.equal(cov[name], cov[c0]):
+                        cov[name] = cov[c0]
+                        break
+                else:
+                    canon.append(name)
+        return Statistics(cov, dict(self.count))
+
     def save(self, path: Union[str, Path], *, packed: bool = True) -> None:
         """Save with ``torch.save``.
 

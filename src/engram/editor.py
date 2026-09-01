@@ -171,7 +171,7 @@ class EngramEditor:
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
                 self._forward(self._move_to_device(raw_inputs))
 
-        return Statistics(collector.covariance_matrices, collector.sample_counts)
+        return Statistics(collector.covariance_matrices, collector.sample_counts).dedupe()
 
     @staticmethod
     def merge_statistics(*stats: Statistics) -> Statistics:
@@ -298,9 +298,13 @@ class EngramEditor:
             else:
                 # factored form: pinv = U_k diag(inv_lam) U_k^T, applied right-to-left so the
                 # D x D inverse is never materialized (identical result, D^2 less memory).
+                # Siblings sharing a covariance are consecutive in iteration order, so a
+                # single-entry cache captures the reuse without retaining one U_k per distinct
+                # covariance — which would pin tens of GB on a large model.
                 ckey = (id(total_covariance[layer_name]), N)   # N only matters for cut="mp_n"
                 cached = factor_cache.get(ckey)
                 if cached is None:
+                    factor_cache.clear()
                     cached = spectral_factors(
                         c_total, rank_fraction=rank_fraction, rtol=rtol,
                         method=inverse_solver, floor=rank_floor,

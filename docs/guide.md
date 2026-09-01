@@ -165,35 +165,47 @@ P = W @ C_target @ pinv(C_total)         # closed form, one pinv per layer (mean
 ## Shared inputs
 
 Inside a transformer block, `q`/`k`/`v` all read the post-attention LayerNorm output and
-`gate`/`up` both read the post-MLP one. Their **input covariances are therefore identical** —
-bit-for-bit, not approximately — so ai-engram computes, stores and decomposes each one once:
+`gate`/`up` both read the post-MLP one. Their input covariances come out **identical to the last
+bit**, so ai-engram avoids paying for them twice — in two independent places.
+
+**During collection**, a small window of recent inputs lets a layer reuse the `x^T x` a sibling
+just computed. Every layer still folds that product into **its own** accumulator with **its own**
+count, so the arithmetic is exactly what it would be without sharing; only the matrix product is
+skipped. The window is keyed on tensor identity (not layer names, so unfamiliar architectures are
+covered) and is cleared at every batch boundary, so a hit can only ever mean *"the layer before me,
+in this forward, saw this very tensor"*.
+
+**After collection**, `Statistics.dedupe()` collapses covariances that are already bit-identical
+onto one tensor. Because it merges only what is already equal, it cannot change a number; what it
+changes is how many distinct matrices the rest of the pipeline has to store and decompose.
 
 ```python
-stats = editor.collect_statistics(loader)
-stats["...q_proj"] is stats["...k_proj"]     # True — one tensor, two names
+stats = editor.collect_statistics(loader)     # dedupe runs at the end
+stats["...q_proj"] is stats["...k_proj"]      # True — one tensor, two names
 ```
-
-The collector recognizes the repeat through a small window of recent inputs, keyed on tensor
-identity rather than layer names, so fused-QKV blocks, MoE experts and unfamiliar architectures
-are covered without a rule for each. `CovarianceCollector.shared_hits` reports how many products
-were skipped.
 
 Measured on Qwen3-0.6B (197 layers, 113 distinct groups = 28 blocks × 4 + `lm_head`):
 
 | | separate | shared |
 |---|---:|---:|
-| collection (7680 tokens) | 1.68 s | **0.45 s** |
-| covariance memory | 2.118 GB | **1.766 GB** |
+| collection (7680 tokens) | 0.62 s | **0.56 s** |
+| covariance memory, after collection | 2.118 GB | **1.766 GB** |
 | statistics file | 1.060 GB | **0.883 GB** |
 | eigendecompositions | 197 | **113** |
-| engram computation | 4.55 s | **3.43 s** |
+| engram computation | 4.39 s | **3.43 s** |
 
-Every covariance, count and projection is bit-identical to the unshared path. How much storage this saves depends on how much of a model is
-attention/MLP-input width rather than MLP-intermediate width — 16.6% measured above, and by the
-same accounting ~20% on Qwen3-8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+Every covariance, count and projection is bit-identical to the unshared path.
 
-`Statistics.save` writes a shared covariance once and records who shares it; `load` and `to`
-restore the sharing rather than copying. `merge` does materialize one tensor per key.
+Two honest caveats. The memory figure is **steady state, not peak**: collection still allocates one
+buffer per layer, and the duplicates are released when `dedupe` runs, so a VRAM-limited run sees no
+lower high-water mark (that is what `storage_device="cpu"` is for). And how much storage this saves
+depends on how much of a model is attention/MLP-input width rather than MLP-intermediate width —
+16.6% measured here, and by the same accounting ~20% on Qwen3-8B, ~10% on Qwen3-32B, ~16% on
+Llama-70B, where the MLP intermediate dominates.
+
+`save` writes a shared covariance once and records who shares it, under its own format tag so an
+older reader fails loudly instead of silently dropping the aliased layers; `load` and `to` restore
+the sharing. `merge` materializes one tensor per key.
 
 ## Inverse and conditioning
 
@@ -470,7 +482,7 @@ arbitrary contents round-trip exactly.
 | symmetric eigendecomposition | `inverse_method="eigh"` | 10-66x faster than the SVD `pinv` |
 | factored inverse application | `compute_engram_weights` | the `D×D` inverse is never materialized |
 | packed symmetric statistics | `Statistics.save` | half-size files, upper triangle bit-exact |
-| shared input covariances | collection, storage, inverse | q/k/v and gate/up computed, stored and decomposed once |
+| shared input covariances | collection, storage, inverse | q/k/v and gate/up share one `x^T x`, one stored tensor and one decomposition |
 | `inference_mode` / `no_grad` | both stages | no autograd overhead |
 | selective `target_modules` | collection | edit only what you need (LoRA convention) |
 | answer-token masking | `mask_fn` | covariance over relevant tokens only (any layer, incl. MoE) |

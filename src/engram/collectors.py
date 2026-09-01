@@ -111,6 +111,7 @@ class CovarianceCollector:
     def set_mask(self, mask: Optional[torch.Tensor]) -> None:
         """Set the per-batch token mask and reset routing-alignment state."""
         self.current_mask = mask
+        self.begin_batch()
         self._ref.clear()
         self._routed_mask = None
 
@@ -155,20 +156,25 @@ class CovarianceCollector:
 
     _WINDOW = 6  # siblings fire consecutively; a handful of entries is enough
 
+    def begin_batch(self) -> None:
+        """Drop the input-sharing window. Sharing is only ever valid inside one forward pass: a
+        caller that reuses the same batch tensor object across iterations (or re-masks it) must
+        not be served a stale product."""
+        self._recent.clear()
+
     @property
     def shared_hits(self) -> int:
         """How many ``x^T x`` products were skipped because a sibling had already computed one."""
         return self._shared_hits
 
-    def _remember(self, key, raw, owner) -> None:
-        """Bounded MRU of (input tensor, the layer that owns this group's accumulator).
+    def _remember(self, key, raw, batch, k) -> None:
+        """Bounded MRU of (input tensor, its ``x^T x``, its row count), valid for ONE forward.
 
-        Only the owner's *name* is needed on a hit — the adopter reuses the owner's buffer, which
-        already holds this batch. The tensor reference is kept because it is what makes comparing
-        ``id()`` sound (a freed tensor's address can be reused); nothing else is pinned, so the
-        window costs a handful of activation references rather than covariance-sized copies.
+        The tensor reference is what makes comparing ``id()`` sound — a freed tensor's address can
+        be reused — and the window is cleared at every batch boundary, so a hit can only ever mean
+        "the layer before me, in this forward, saw this very tensor".
         """
-        self._recent[key] = (raw, owner)
+        self._recent[key] = (raw, batch, k)
         while len(self._recent) > self._WINDOW:
             self._recent.pop(next(iter(self._recent)))
 
@@ -218,15 +224,11 @@ class CovarianceCollector:
                     key = (id(raw), layer_handler.__class__, absorb_bias)
                     hit = self._recent.get(key)
                     if hit is not None:
-                        # Adopt the sibling's accumulator instead of keeping an identical copy:
-                        # one buffer per *group*, not per layer. The owner already folded this
-                        # batch in, so this layer must not fold it in again.
-                        owner = hit[1]
+                        # Same tensor, same handler, same absorption -> the same x^T x. Reuse the
+                        # product; every layer still folds it into its OWN accumulator with its
+                        # own count, so the arithmetic is identical to computing it again.
+                        batch, k = hit[1], hit[2]
                         self._shared_hits += 1
-                        if self.covariance_matrices[layer_name] is not self.covariance_matrices[owner]:
-                            self.covariance_matrices[layer_name] = self.covariance_matrices[owner]
-                        self.sample_counts[layer_name] = self.sample_counts[owner]
-                        return
                     else:
                         x = layer_handler.reshape_input(mod, inputs, absorb_bias=absorb_bias).to(
                             torch.float32
@@ -239,11 +241,11 @@ class CovarianceCollector:
                             return
                         # incremental mean: C := (N*C + sum(x^T x)) / (N + k), magnitude-bounded
                         batch = (x.mT @ x).to(self._storage_device)
+                        self._remember(key, raw, batch, k)
                     n = self.sample_counts[layer_name]
                     cov = self.covariance_matrices[layer_name]
                     cov.add_((batch - k * cov) / (n + k))
                     self.sample_counts[layer_name] = n + k
-                    self._remember(key, raw, layer_name)
 
                 return hook
 
