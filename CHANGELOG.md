@@ -18,6 +18,15 @@ All notable changes to **ai-engram** are documented here. The format follows
   it pins no meaningful memory. Architecture-agnostic: it keys on tensor identity, not on layer
   names, so fused-QKV, MoE and future block shapes get the same treatment.
 
+  The sharing runs all the way through: the group keeps **one accumulator** rather than one per
+  layer, `Statistics.save` writes it **once** (recording who shares it, and restoring the sharing
+  on load), and `compute_engram_weights` **decomposes each distinct covariance once** instead of
+  once per layer. Measured on Qwen3-0.6B (197 layers → 113 distinct): covariance memory and file
+  size **−16.6%**, `spectral_factors` calls 197 → 113, engram computation **4.55 s → 3.43 s
+  (1.33x)**, with every projection bit-identical. The gains scale with how much of the model is
+  attention/MLP-input width rather than MLP-intermediate width: ~20% of storage on Qwen3-0.6B and
+  -8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+
 ## [0.9.0] — 2026-08-31
 
 Performance release: the engram computed an order of magnitude faster and stored in half the

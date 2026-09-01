@@ -160,10 +160,11 @@ class CovarianceCollector:
         """How many ``x^T x`` products were skipped because a sibling had already computed one."""
         return self._shared_hits
 
-    def _remember(self, key, raw, batch, k) -> None:
-        """Bounded MRU of (input tensor, its batch covariance). The tensor reference is what
-        makes the ``id()`` comparison sound — without it a freed address could be reused."""
-        self._recent[key] = (raw, batch, k)
+    def _remember(self, key, raw, batch, k, owner) -> None:
+        """Bounded MRU of (input tensor, its batch covariance, the layer that owns the buffer).
+        The tensor reference is what makes the ``id()`` comparison sound — without it a freed
+        address could be reused."""
+        self._recent[key] = (raw, batch, k, owner)
         while len(self._recent) > self._WINDOW:
             self._recent.pop(next(iter(self._recent)))
 
@@ -213,8 +214,15 @@ class CovarianceCollector:
                     key = (id(raw), layer_handler.__class__, absorb_bias)
                     hit = self._recent.get(key)
                     if hit is not None:
-                        batch, k = hit[1], hit[2]
+                        # Adopt the sibling's accumulator instead of keeping an identical copy:
+                        # one buffer per *group*, not per layer. The owner already folded this
+                        # batch in, so this layer must not fold it in again.
+                        owner = hit[3]
                         self._shared_hits += 1
+                        if self.covariance_matrices[layer_name] is not self.covariance_matrices[owner]:
+                            self.covariance_matrices[layer_name] = self.covariance_matrices[owner]
+                        self.sample_counts[layer_name] = self.sample_counts[owner]
+                        return
                     else:
                         x = layer_handler.reshape_input(mod, inputs, absorb_bias=absorb_bias).to(
                             torch.float32
@@ -227,13 +235,11 @@ class CovarianceCollector:
                             return
                         # incremental mean: C := (N*C + sum(x^T x)) / (N + k), magnitude-bounded
                         batch = (x.mT @ x).to(self._storage_device)
-                        self._remember(key, raw, batch, k)
-                    if k == 0:
-                        return
                     n = self.sample_counts[layer_name]
                     cov = self.covariance_matrices[layer_name]
                     cov.add_((batch - k * cov) / (n + k))
                     self.sample_counts[layer_name] = n + k
+                    self._remember(key, raw, batch, k, layer_name)
 
                 return hook
 

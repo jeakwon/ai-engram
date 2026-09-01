@@ -93,3 +93,57 @@ def test_masked_sharing():
     st = ed.collect_statistics(batches, batch_fn=lambda b: b["x"], mask_fn=lambda b: b["m"])
     assert st.count["q"] == 3 * 5            # masked rows excluded
     assert torch.equal(st["q"], st["v"])     # and the group still shares
+
+
+# T5: one accumulator per group — members hold the same object, not a copy.
+def test_group_shares_one_buffer():
+    torch.manual_seed(0)
+    st = _collect(_Block(), _batches(), CovarianceCollector._WINDOW)
+    assert st["q"] is st["k"] and st["q"] is st["v"]
+    assert st["q"] is not st["o"]
+    assert len({id(v) for v in st.cov.values()}) == 2      # {q,k,v} and {o}
+
+
+# T6: the file stores a shared covariance once, and load restores the sharing.
+def test_save_dedupes_and_load_restores_sharing(tmp_path):
+    torch.manual_seed(0)
+    st = _collect(_Block(), _batches(), CovarianceCollector._WINDOW)
+    shared, unshared = tmp_path / "shared.pt", tmp_path / "unshared.pt"
+    st.save(shared)
+    from engram import Statistics
+
+    Statistics({k: v.clone() for k, v in st.cov.items()}, dict(st.count)).save(unshared)
+    assert shared.stat().st_size < unshared.stat().st_size
+    back = Statistics.load(shared)
+    assert back["q"] is back["k"] and back["q"] is back["v"]
+    for name in st:
+        assert torch.equal(back[name], st[name])
+    assert back.count == st.count
+
+
+# T7: the engram decomposes each distinct covariance once, and the result is unchanged.
+def test_engram_reuses_factors_per_distinct_covariance():
+    import engram.editor as editor_mod
+
+    torch.manual_seed(0)
+    m = _Block()
+    st = _collect(m, _batches(), CovarianceCollector._WINDOW)
+    tgt = _collect(m, _batches(seed=1), CovarianceCollector._WINDOW)
+    ed = EngramEditor(m, EditorConfig(storage_device="cpu"))
+    calls, orig = [0], editor_mod.spectral_factors
+
+    def counting(*a, **k):
+        calls[0] += 1
+        return orig(*a, **k)
+
+    editor_mod.spectral_factors = counting
+    try:
+        shared = ed.compute_engram_weights(tgt, st)
+    finally:
+        editor_mod.spectral_factors = orig
+    assert calls[0] == 2                                   # not 4 — one per distinct covariance
+    plain = ed.compute_engram_weights(
+        tgt, __import__("engram").Statistics({k: v.clone() for k, v in st.cov.items()}, dict(st.count))
+    )
+    for name in plain.layers:
+        assert torch.equal(shared.layers[name].projection, plain.layers[name].projection)
