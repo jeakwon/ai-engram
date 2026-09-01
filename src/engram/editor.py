@@ -260,6 +260,9 @@ class EngramEditor:
 
         result = EngramResult()
         modules = dict(self.model.named_modules())
+        # Layers sharing an input share their covariance object, so the eigendecomposition is
+        # computed once per distinct matrix rather than once per layer.
+        factor_cache: Dict[int, Any] = {}
         dev = self._model_device  # float32 throughout — float64's pinv is catastrophic on
         prec = torch.float32      # ill-conditioned C_total (see CovarianceCollector).
 
@@ -295,13 +298,18 @@ class EngramEditor:
             else:
                 # factored form: pinv = U_k diag(inv_lam) U_k^T, applied right-to-left so the
                 # D x D inverse is never materialized (identical result, D^2 less memory).
-                u_k, inv_lam = spectral_factors(
-                    c_total, rank_fraction=rank_fraction, rtol=rtol,
-                    method=inverse_solver, floor=rank_floor,
-                    compute_dtype=inverse_precision, condition_cap=condition_cap,
-                    cut=cut, energy_fraction=energy_fraction, ridge_delta=ridge_delta,
-                    n_samples=N or None,
-                )
+                ckey = id(total_covariance[layer_name])
+                cached = factor_cache.get(ckey)
+                if cached is None:
+                    cached = spectral_factors(
+                        c_total, rank_fraction=rank_fraction, rtol=rtol,
+                        method=inverse_solver, floor=rank_floor,
+                        compute_dtype=inverse_precision, condition_cap=condition_cap,
+                        cut=cut, energy_fraction=energy_fraction, ridge_delta=ridge_delta,
+                        n_samples=N or None,
+                    )
+                    factor_cache[ckey] = cached
+                u_k, inv_lam = cached
                 pinv_total = None
 
             def _project(w_mat: torch.Tensor) -> torch.Tensor:
