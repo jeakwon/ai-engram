@@ -184,6 +184,10 @@ stats = editor.collect_statistics(loader)     # dedupe runs at the end
 stats["...q_proj"] is stats["...k_proj"]      # True — one tensor, two names
 ```
 
+Because they are one object, **treat a covariance as read-only**: an in-place write into one
+layer's matrix writes into its siblings' too. `Statistics.merge(stats)` gives back one tensor per
+key if you need to modify them.
+
 Measured on Qwen3-0.6B (197 layers, 113 distinct groups = 28 blocks × 4 + `lm_head`):
 
 | | separate | shared |

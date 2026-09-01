@@ -155,6 +155,10 @@ class Statistics:
         This runs *after* collection rather than during it, so the accumulation itself stays
         exactly what it was: every layer folds every batch it saw, with its own count. Only
         tensors that are already identical, and whose counts agree, are merged.
+
+        The merged covariances are the *same object*, so writing into one in place writes into
+        all of them. Treat them as read-only — or call :meth:`merge` on the result, which
+        materializes one tensor per key.
         """
         by_shape: Dict[Any, List[str]] = {}
         for name, c in self.cov.items():

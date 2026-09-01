@@ -205,18 +205,44 @@ def test_module_reused_on_different_tensors():
         assert torch.equal(on[name], off[name])
 
 
-# R2: the window must not survive a batch boundary — a reused batch OBJECT is a new batch.
-def test_repeated_batch_object():
-    one = {"x": torch.randn(6, 16, generator=torch.Generator().manual_seed(3))}
+# R2: the window must not survive a batch boundary — a reused batch OBJECT holding NEW rows is a
+# new batch. Reusing the object with unchanged contents would pass either way, which is how a
+# never-cleared window hid here before.
+def _refilling_loader(rows, batch=6):
+    """A loader that refills one preallocated tensor, as a pinned-buffer pipeline would."""
+    buf = torch.empty(batch, rows.shape[1])
+
+    def gen():
+        for i in range(0, len(rows), batch):
+            buf.copy_(rows[i:i + batch])
+            yield {"x": buf}
+    return gen
+
+
+def test_refilled_batch_buffer():
+    g = torch.Generator().manual_seed(3)
+    rows = torch.randn(24, 16, generator=g)
     torch.manual_seed(0)
     model_a = _Direct()
     torch.manual_seed(0)
     model_b = _Direct()                      # same weights, so any difference is the sharing
-    on = _collect(model_a, [one] * 4, CovarianceCollector._WINDOW)
-    off = _collect(model_b, [one] * 4, 0)
+    loader = _refilling_loader(rows)
+    on = _collect(model_a, loader(), CovarianceCollector._WINDOW)
+    off = _collect(model_b, loader(), 0)
     assert on.count == off.count and on.count["a"] == 24
     for name in off:
         assert torch.equal(on[name], off[name])
+    # and the covariance is the whole corpus, not just the first batch
+    ref = rows.T @ rows / 24
+    assert torch.allclose(on["a"], ref, atol=1e-5)
+
+
+# R2b: an in-place write into a shared covariance is visible through every name (documented).
+def test_shared_covariance_is_aliased():
+    torch.manual_seed(0)
+    st = _collect(_Block(), _batches(), CovarianceCollector._WINDOW)
+    st["q"].mul_(2.0)
+    assert torch.equal(st["k"], st["q"])     # same object, by design — treat as read-only
 
 
 # R3: the same tensor object under a different mask is a different measurement.

@@ -18,8 +18,10 @@ projections, the same edits — but layers that read the same tensor stop paying
   *Collection* — a six-entry window of recent inputs lets a layer reuse the `x^T x` a sibling just
   computed. Every layer still folds that product into its own accumulator with its own count, so
   the arithmetic is untouched; only the matrix product is skipped. The window is keyed on tensor
-  identity rather than layer names (so unfamiliar block shapes are covered) and is cleared at every
-  batch boundary, so a hit can only mean "the layer before me, in this forward, saw this tensor".
+  identity rather than layer names (so unfamiliar block shapes are covered) and is cleared at the
+  start of every batch — including when no `mask_fn` is given — so a hit can only mean "the layer
+  before me, in this forward, saw this tensor". A loader that refills one preallocated tensor is
+  therefore handled correctly.
 
   *Everything downstream* — `collect_statistics` finishes with `Statistics.dedupe()`, which
   collapses covariances that are **already bit-identical** onto one tensor. Merging only what is
@@ -36,7 +38,9 @@ projections, the same edits — but layers that read the same tensor stop paying
 - **`Statistics.save` stores a shared covariance once**, under on-disk `format=4` with an alias
   map. Files without aliases keep `format=3`, which ai-engram 0.9.x still reads; an aliased file
   fails loudly there rather than silently returning a `Statistics` missing the aliased layers.
-  `load` and `to` restore the sharing; `merge` materializes one tensor per key.
+  `load` and `to` restore the sharing; `merge` materializes one tensor per key. Because siblings
+  now hold the *same* tensor, a covariance must be treated as read-only — an in-place write into
+  one is a write into all of them.
 
 - **The engram decomposes each distinct covariance once.** A single-entry factor cache is enough,
   since layers sharing a covariance are consecutive in iteration order — a per-covariance cache

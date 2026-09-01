@@ -166,6 +166,10 @@ class EngramEditor:
             for batch in tqdm(
                 dataloader, disable=None, desc="Collecting covariance"
             ):
+                # Unconditionally, not only when a mask_fn exists: the input-sharing window is
+                # only ever valid inside one forward pass. A loader that refills a preallocated
+                # tensor would otherwise be served the previous batch's product.
+                collector.begin_batch()
                 if mask_fn is not None:
                     collector.set_mask(mask_fn(batch))
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
