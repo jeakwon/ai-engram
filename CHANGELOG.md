@@ -4,6 +4,20 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [Unreleased]
+
+### Changed
+
+- **Layers fed by the same tensor now share one covariance computation.** `q`/`k`/`v` read the
+  same post-attention LayerNorm output and `gate`/`up` the same post-MLP one, so their input
+  covariances are identical — verified bit-for-bit on a real model. The collector recognizes the
+  repeat through a small window of recent inputs and skips the redundant `x^T x` (and the reshape
+  and cast in front of it). Measured on Qwen3-0.6B, 7680 tokens over 197 layers: collection
+  **1.68 s → 0.45 s (3.7x)**, with every covariance and count bit-identical. The window holds
+  strong references, which is what makes comparing `id()` sound, and is bounded to 6 entries, so
+  it pins no meaningful memory. Architecture-agnostic: it keys on tensor identity, not on layer
+  names, so fused-QKV, MoE and future block shapes get the same treatment.
+
 ## [0.9.0] — 2026-08-31
 
 Performance release: the engram computed an order of magnitude faster and stored in half the
