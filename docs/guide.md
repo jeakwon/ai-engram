@@ -188,9 +188,9 @@ Measured on Qwen3-0.6B (197 layers, 113 distinct groups = 28 blocks × 4 + `lm_h
 | eigendecompositions | 197 | **113** |
 | engram computation | 4.55 s | **3.43 s** |
 
-Every covariance, count and projection is bit-identical to the unshared path. The storage share
-of the saving depends on how much of the model is attention/MLP-input width rather than
-MLP-intermediate width: ~20% on Qwen3-0.6B and -8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+Every covariance, count and projection is bit-identical to the unshared path. How much storage this saves depends on how much of a model is
+attention/MLP-input width rather than MLP-intermediate width — 16.6% measured above, and by the
+same accounting ~20% on Qwen3-8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
 
 `Statistics.save` writes a shared covariance once and records who shares it; `load` and `to`
 restore the sharing rather than copying. `merge` does materialize one tensor per key.

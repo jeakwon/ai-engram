@@ -21,8 +21,9 @@ from typing import Dict, Iterator, Union
 
 import torch
 
-_FORMAT = 3  # on-disk tag; format 2 (dense) still loads; the legacy untagged "sum-only dict" is rejected
-_FORMAT_DENSE = 2
+_FORMAT_ALIASED = 4  # packed + an alias map (layers sharing one covariance)
+_FORMAT = 3          # packed, no aliases — still readable by 0.9.x
+_FORMAT_DENSE = 2    # dense; the legacy untagged "sum-only dict" is rejected
 
 
 _SYM_RTOL = 1e-5  # pack only when max|C - C^T| <= _SYM_RTOL * max|C| (fp accumulation noise passes)
@@ -163,7 +164,10 @@ class Statistics:
                     continue
                 owner_of[oid] = k
                 packed_cov[k] = _pack_symmetric(v)
-            obj = {"format": _FORMAT, "cov_packed": packed_cov, "count": self.count}
+            # A reader that does not know about aliases would silently lose the aliased layers,
+            # so a file that has them gets its own tag and fails loudly on 0.9.x instead.
+            obj = {"format": _FORMAT_ALIASED if alias else _FORMAT,
+                   "cov_packed": packed_cov, "count": self.count}
             if alias:
                 obj["alias"] = alias
             torch.save(obj, path)
@@ -176,7 +180,7 @@ class Statistics:
     ) -> "Statistics":
         """Load a :class:`Statistics`. Rejects the legacy raw-covariance dict format."""
         obj = torch.load(path, map_location=map_location, weights_only=True)
-        if isinstance(obj, dict) and obj.get("format") == _FORMAT and "cov_packed" in obj:
+        if isinstance(obj, dict) and obj.get("format") in (_FORMAT, _FORMAT_ALIASED) and "cov_packed" in obj:
             # unpack on the host, then honour map_location
             cov = {k: _unpack_symmetric(v) for k, v in obj["cov_packed"].items()}
             if map_location is not None:
@@ -187,7 +191,7 @@ class Statistics:
         if isinstance(obj, dict) and obj.get("format") == _FORMAT_DENSE and "cov" in obj:
             return Statistics(obj["cov"], obj["count"])
         raise ValueError(
-            f"{path!r} is not a Statistics file (format={_FORMAT} packed or "
+            f"{path!r} is not a Statistics file (format={_FORMAT_ALIASED}/{_FORMAT} packed or "
             f"{_FORMAT_DENSE} dense). It looks like a legacy raw-covariance dict; "
             "re-collect with EngramEditor.collect_statistics() — the mean+count "
             "format cannot be reconstructed from summed covariances."

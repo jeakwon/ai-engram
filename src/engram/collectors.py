@@ -160,11 +160,15 @@ class CovarianceCollector:
         """How many ``x^T x`` products were skipped because a sibling had already computed one."""
         return self._shared_hits
 
-    def _remember(self, key, raw, batch, k, owner) -> None:
-        """Bounded MRU of (input tensor, its batch covariance, the layer that owns the buffer).
-        The tensor reference is what makes the ``id()`` comparison sound — without it a freed
-        address could be reused."""
-        self._recent[key] = (raw, batch, k, owner)
+    def _remember(self, key, raw, owner) -> None:
+        """Bounded MRU of (input tensor, the layer that owns this group's accumulator).
+
+        Only the owner's *name* is needed on a hit — the adopter reuses the owner's buffer, which
+        already holds this batch. The tensor reference is kept because it is what makes comparing
+        ``id()`` sound (a freed tensor's address can be reused); nothing else is pinned, so the
+        window costs a handful of activation references rather than covariance-sized copies.
+        """
+        self._recent[key] = (raw, owner)
         while len(self._recent) > self._WINDOW:
             self._recent.pop(next(iter(self._recent)))
 
@@ -217,7 +221,7 @@ class CovarianceCollector:
                         # Adopt the sibling's accumulator instead of keeping an identical copy:
                         # one buffer per *group*, not per layer. The owner already folded this
                         # batch in, so this layer must not fold it in again.
-                        owner = hit[3]
+                        owner = hit[1]
                         self._shared_hits += 1
                         if self.covariance_matrices[layer_name] is not self.covariance_matrices[owner]:
                             self.covariance_matrices[layer_name] = self.covariance_matrices[owner]
@@ -239,7 +243,7 @@ class CovarianceCollector:
                     cov = self.covariance_matrices[layer_name]
                     cov.add_((batch - k * cov) / (n + k))
                     self.sample_counts[layer_name] = n + k
-                    self._remember(key, raw, batch, k, layer_name)
+                    self._remember(key, raw, layer_name)
 
                 return hook
 

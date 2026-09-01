@@ -158,3 +158,36 @@ def test_to_preserves_sharing():
     assert moved["q"] is not moved["o"]
     for name in st:
         assert torch.equal(moved[name], st[name])
+
+
+# T9: a file carrying an alias map is tagged apart, so a reader that predates aliases fails
+# loudly instead of silently dropping the aliased layers.
+def test_alias_files_are_tagged_apart(tmp_path):
+    from engram import Statistics
+    from engram.stats import _FORMAT, _FORMAT_ALIASED
+
+    c = torch.randn(6, 8)
+    cov = c.T @ c
+    shared = Statistics({"q": cov, "k": cov}, {"q": 6, "k": 6})
+    plain = Statistics({"q": cov.clone()}, {"q": 6})
+    fs, fp = tmp_path / "s.pt", tmp_path / "p.pt"
+    shared.save(fs)
+    plain.save(fp)
+    assert torch.load(fs, weights_only=True)["format"] == _FORMAT_ALIASED
+    assert torch.load(fp, weights_only=True)["format"] == _FORMAT       # 0.9.x can still read it
+    back = Statistics.load(fs)
+    assert back["q"] is back["k"] and torch.equal(back["q"], cov)
+
+
+# T10: the sharing window pins only tensor references, never covariance-sized copies.
+def test_window_holds_no_covariances():
+    torch.manual_seed(0)
+    m = _Block()
+    ed = EngramEditor(m, EditorConfig(storage_device="cpu"))
+    col = CovarianceCollector(m, EditorConfig(storage_device="cpu"), ed.registry)
+    with col:
+        for b in _batches():
+            m(b["x"])
+        for entry in col._recent.values():
+            assert len(entry) == 2                       # (input tensor, owner name)
+            assert isinstance(entry[1], str)

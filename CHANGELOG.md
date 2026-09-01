@@ -13,22 +13,25 @@ projections, the same edits — but layers that share an input now share the wor
 
 - **Layers fed by the same tensor now share one covariance computation.** `q`/`k`/`v` read the
   same post-attention LayerNorm output and `gate`/`up` the same post-MLP one, so their input
-  covariances are identical — verified bit-for-bit on a real model. The collector recognizes the
+  covariances are identical — verified bit-for-bit on a real model. (A module applied twice to
+  *different* tensors is unaffected; sharing only ever collapses layers that saw the same one.) The collector recognizes the
   repeat through a small window of recent inputs and skips the redundant `x^T x` (and the reshape
   and cast in front of it). Measured on Qwen3-0.6B, 7680 tokens over 197 layers: collection
   **1.68 s → 0.45 s (3.7x)**, with every covariance and count bit-identical. The window holds
   strong references, which is what makes comparing `id()` sound, and is bounded to 6 entries, so
-  it pins no meaningful memory. Architecture-agnostic: it keys on tensor identity, not on layer
-  names, so fused-QKV, MoE and future block shapes get the same treatment.
+  it pins no meaningful memory. It keys on tensor identity rather than layer names, so a block
+  whose siblings share an input is recognized without a rule for its architecture. (Fused-MoE
+  experts register their own hooks through the adapter protocol and are unaffected either way.)
 
   The sharing runs all the way through: the group keeps **one accumulator** rather than one per
   layer, `Statistics.save` writes it **once** (recording who shares it, and restoring the sharing
   on load), and `compute_engram_weights` **decomposes each distinct covariance once** instead of
   once per layer. Measured on Qwen3-0.6B (197 layers → 113 distinct): covariance memory and file
   size **−16.6%**, `spectral_factors` calls 197 → 113, engram computation **4.55 s → 3.43 s
-  (1.33x)**, with every projection bit-identical. The gains scale with how much of the model is
-  attention/MLP-input width rather than MLP-intermediate width: ~20% of storage on Qwen3-0.6B and
-  -8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+  (1.33x)**, with every projection bit-identical. How much of the storage this saves depends on how much of a model
+  is attention/MLP-input width rather than MLP-intermediate width — 16.6% measured on Qwen3-0.6B,
+  and by the same accounting ~20% on Qwen3-8B, ~10% on Qwen3-32B and ~16% on Llama-70B, where the
+  MLP intermediate dominates.
 
 ## [0.9.0] — 2026-08-31
 
