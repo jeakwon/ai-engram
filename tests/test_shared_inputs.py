@@ -147,3 +147,14 @@ def test_engram_reuses_factors_per_distinct_covariance():
     )
     for name in plain.layers:
         assert torch.equal(shared.layers[name].projection, plain.layers[name].projection)
+
+
+# T8: moving preserves sharing (moving members separately would undo the memory saving).
+def test_to_preserves_sharing():
+    torch.manual_seed(0)
+    st = _collect(_Block(), _batches(), CovarianceCollector._WINDOW)
+    moved = st.to("cpu")
+    assert moved["q"] is moved["k"] and moved["q"] is moved["v"]
+    assert moved["q"] is not moved["o"]
+    for name in st:
+        assert torch.equal(moved[name], st[name])

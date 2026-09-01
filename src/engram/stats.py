@@ -99,8 +99,19 @@ class Statistics:
         return self.cov.items()
 
     def to(self, device: Union[str, torch.device]) -> "Statistics":
-        """Move every covariance to ``device`` (counts are plain ints, copied as-is)."""
-        return Statistics({k: v.to(device) for k, v in self.cov.items()}, dict(self.count))
+        """Move every covariance to ``device`` (counts are plain ints, copied as-is).
+
+        Layers that share one covariance (q/k/v, gate/up) keep sharing it after the move —
+        moving each member separately would silently triple the memory the collector saved.
+        """
+        moved: Dict[int, torch.Tensor] = {}
+        cov: Dict[str, torch.Tensor] = {}
+        for k, v in self.cov.items():
+            oid = id(v)
+            if oid not in moved:
+                moved[oid] = v.to(device)
+            cov[k] = moved[oid]
+        return Statistics(cov, dict(self.count))
 
     @staticmethod
     def merge(*stats: "Statistics") -> "Statistics":
@@ -110,6 +121,10 @@ class Statistics:
         unioned; a key present in only some inputs contributes only its own
         ``(count, mean)``. Combined incrementally (``C += n_i/(N+n_i) (C_i - C)``) so
         no large ``n_i * C_i`` intermediate is formed.
+
+        Note that a merge materializes one tensor per key: layers that shared a covariance
+        during collection no longer do afterwards. That costs memory on a merged result but
+        keeps the arithmetic obviously correct; ``to()`` and ``save()`` do preserve sharing.
         """
         cov: Dict[str, torch.Tensor] = {}
         count: Dict[str, int] = {}
