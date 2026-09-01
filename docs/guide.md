@@ -162,6 +162,39 @@ P = W @ C_target @ pinv(C_total)         # closed form, one pinv per layer (mean
 - A list of target `Statistics` is merged first (count-weighted `merge_statistics`),
   so you can pass per-class statistics.
 
+## Shared inputs
+
+Inside a transformer block, `q`/`k`/`v` all read the post-attention LayerNorm output and
+`gate`/`up` both read the post-MLP one. Their **input covariances are therefore identical** —
+bit-for-bit, not approximately — so ai-engram computes, stores and decomposes each one once:
+
+```python
+stats = editor.collect_statistics(loader)
+stats["...q_proj"] is stats["...k_proj"]     # True — one tensor, two names
+```
+
+The collector recognizes the repeat through a small window of recent inputs, keyed on tensor
+identity rather than layer names, so fused-QKV blocks, MoE experts and unfamiliar architectures
+are covered without a rule for each. `CovarianceCollector.shared_hits` reports how many products
+were skipped.
+
+Measured on Qwen3-0.6B (197 layers, 113 distinct groups = 28 blocks × 4 + `lm_head`):
+
+| | separate | shared |
+|---|---:|---:|
+| collection (7680 tokens) | 1.68 s | **0.45 s** |
+| covariance memory | 2.118 GB | **1.766 GB** |
+| statistics file | 1.060 GB | **0.883 GB** |
+| eigendecompositions | 197 | **113** |
+| engram computation | 4.55 s | **3.43 s** |
+
+Every covariance, count and projection is bit-identical to the unshared path. The storage share
+of the saving depends on how much of the model is attention/MLP-input width rather than
+MLP-intermediate width: ~20% on Qwen3-0.6B and -8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+
+`Statistics.save` writes a shared covariance once and records who shares it; `load` and `to`
+restore the sharing rather than copying. `merge` does materialize one tensor per key.
+
 ## Inverse and conditioning
 
 `pinv(C_total)` is both the cost centre and the stability centre of the method, so it is worth
@@ -437,6 +470,7 @@ arbitrary contents round-trip exactly.
 | symmetric eigendecomposition | `inverse_method="eigh"` | 10-66x faster than the SVD `pinv` |
 | factored inverse application | `compute_engram_weights` | the `D×D` inverse is never materialized |
 | packed symmetric statistics | `Statistics.save` | half-size files, upper triangle bit-exact |
+| shared input covariances | collection, storage, inverse | q/k/v and gate/up computed, stored and decomposed once |
 | `inference_mode` / `no_grad` | both stages | no autograd overhead |
 | selective `target_modules` | collection | edit only what you need (LoRA convention) |
 | answer-token masking | `mask_fn` | covariance over relevant tokens only (any layer, incl. MoE) |

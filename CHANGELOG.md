@@ -4,7 +4,10 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.10.0] — 2026-09-01
+
+Performance release: nothing about the engram changes — the same covariances, the same
+projections, the same edits — but layers that share an input now share the work and the space.
 
 ### Changed
 
