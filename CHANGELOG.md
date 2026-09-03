@@ -4,6 +4,31 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
+## [0.11.0] — 2026-09-03
+
+### Added
+
+- **`engram.benchmarks.tofu` — TOFU unlearning in one call.** The benchmark the paper reports,
+  packaged as library code instead of test scaffolding: `load_splits`, `collect` (answer-token
+  masked target and reference covariances, cacheable), `evaluate` at three levels — `"quick"`
+  (answer-token NLL, seconds), `"utility"` (adds the nine-metric Model Utility, whose harmonic
+  mean collapses if any part does), `"full"` (the paper's composite Overall) — plus `run` for
+  collect → edit → score, and `search` for the best `(alpha, scale)`.
+
+  `search` is coarse-to-fine because the engram is computed **once**: `alpha` only scales the
+  subtraction, so a sweep costs evaluations, not extractions. Every candidate is scored at the
+  quick level and only the top few re-scored at the final level. Its default objective is
+  `Overall` — it contains Utility, so it cannot be won by editing harder, the trap a raw
+  forget-minus-retain score falls into; `"constrained"` (maximize forgetting subject to
+  `utility >= floor * baseline`) and a callable are also accepted. `reference=` takes a
+  `Statistics`, so a self-generated or otherwise custom reference covariance drops straight in.
+
+  Measured on the TOFU Llama-3.2-1B model: `run(level="quick")` collects, edits and scores in
+  75 s with cached statistics; the module's base Model Utility (0.5993) matches the value the
+  official evaluation reports (0.5995).
+
+- `tofu` extra: `pip install ai-engram[tofu]` pulls `datasets`, `scipy`, `rouge-score`.
+
 ## [0.10.0] — 2026-09-01
 
 Performance release: nothing about the engram changes — the same covariances, the same
