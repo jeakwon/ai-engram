@@ -25,7 +25,7 @@ W_engram = W · Σ_target · pinv(Σ_total)
 - **HF-native** — Llama, Mistral, Qwen, Gemma, Phi … and GPT-2 (`Conv1D`) out of the box.
 - **Affine-correct** — automatic bias absorption for bias-bearing layers.
 - **Tunable** — per-layer edit scaling is pluggable: the paper's `n/N` (default), relative weight-norm, effective rank, or your own.
-- **Fast and deterministic** — the inverse is a float64 symmetric eigendecomposition: **11.6x faster end-to-end** on TOFU Llama-3.2-1B (158.5 s → 13.6 s for 113 layers), up to **65x** on wide MLP layers, with a keep-set that no longer shifts between runs or dtypes. Statistics files are **half the size** (symmetric packing).
+- **Fast and deterministic** — the inverse is a float64 symmetric eigendecomposition: **11.6x faster end-to-end** on TOFU Llama-3.2-1B (158.5 s → 13.6 s for 113 layers), up to **65x** on wide MLP layers, with a keep-set that no longer shifts between runs or dtypes. Statistics files are **half the size** (symmetric packing), and layers that read the same tensor — `q`/`k`/`v`, `gate`/`up` — share one covariance end to end, so each trio costs one `x^T x`, one stored tensor and one eigendecomposition instead of three — **17%** off covariance memory and file size, **43%** fewer decompositions (197 → 113 on Qwen3-0.6B), every number bit-identical.
 
 > Statistics collection, closed-form **extraction**, and **editing** (`apply` / `edit`) are all here, and reproduce TOFU unlearning (see [Validation](#validation)).
 

@@ -4,28 +4,51 @@ All notable changes to **ai-engram** are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so minor
 (`0.x`) releases may include breaking changes.
 
-## [Unreleased]
+## [0.10.0] — 2026-09-01
+
+Performance release: nothing about the engram changes — the same covariances, the same
+projections, the same edits — but layers that read the same tensor stop paying for it twice.
 
 ### Changed
 
-- **Layers fed by the same tensor now share one covariance computation.** `q`/`k`/`v` read the
-  same post-attention LayerNorm output and `gate`/`up` the same post-MLP one, so their input
-  covariances are identical — verified bit-for-bit on a real model. The collector recognizes the
-  repeat through a small window of recent inputs and skips the redundant `x^T x` (and the reshape
-  and cast in front of it). Measured on Qwen3-0.6B, 7680 tokens over 197 layers: collection
-  **1.68 s → 0.45 s (3.7x)**, with every covariance and count bit-identical. The window holds
-  strong references, which is what makes comparing `id()` sound, and is bounded to 6 entries, so
-  it pins no meaningful memory. Architecture-agnostic: it keys on tensor identity, not on layer
-  names, so fused-QKV, MoE and future block shapes get the same treatment.
+- **`q`/`k`/`v` and `gate`/`up` share their input covariance.** Each trio reads one LayerNorm
+  output, so their covariances are identical to the last bit (verified on a real model). Two
+  independent savings follow:
 
-  The sharing runs all the way through: the group keeps **one accumulator** rather than one per
-  layer, `Statistics.save` writes it **once** (recording who shares it, and restoring the sharing
-  on load), and `compute_engram_weights` **decomposes each distinct covariance once** instead of
-  once per layer. Measured on Qwen3-0.6B (197 layers → 113 distinct): covariance memory and file
-  size **−16.6%**, `spectral_factors` calls 197 → 113, engram computation **4.55 s → 3.43 s
-  (1.33x)**, with every projection bit-identical. The gains scale with how much of the model is
-  attention/MLP-input width rather than MLP-intermediate width: ~20% of storage on Qwen3-0.6B and
-  -8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+  *Collection* — a six-entry window of recent inputs lets a layer reuse the `x^T x` a sibling just
+  computed. Every layer still folds that product into its own accumulator with its own count, so
+  the arithmetic is untouched; only the matrix product is skipped. The window is keyed on tensor
+  identity rather than layer names (so unfamiliar block shapes are covered) and is cleared at the
+  start of every batch — including when no `mask_fn` is given — so a hit can only mean "the layer
+  before me, in this forward, saw this tensor". A loader that refills one preallocated tensor is
+  therefore handled correctly.
+
+  *Everything downstream* — `collect_statistics` finishes with `Statistics.dedupe()`, which
+  collapses covariances that are **already bit-identical** onto one tensor. Merging only what is
+  already equal cannot change a number; it changes how many distinct matrices get stored and
+  decomposed. Measured on Qwen3-0.6B (197 layers → 113 distinct): covariance memory 2.118 → 1.766
+  GB and statistics file 1.060 → 0.883 GB (−16.6%), eigendecompositions 197 → 113, engram
+  computation 4.39 s → 3.43 s (1.28x), collection 0.62 s → 0.56 s. Every covariance, count and
+  projection bit-identical.
+
+  The memory figure is steady state, not peak: collection still allocates one buffer per layer and
+  releases the duplicates at the end. How much storage this saves depends on how much of a model is
+  attention/MLP-input width — ~20% on Qwen3-8B, ~10% on Qwen3-32B, ~16% on Llama-70B.
+
+- **`Statistics.save` stores a shared covariance once**, under on-disk `format=4` with an alias
+  map. Files without aliases keep `format=3`, which ai-engram 0.9.x still reads; an aliased file
+  fails loudly there rather than silently returning a `Statistics` missing the aliased layers.
+  `load` and `to` restore the sharing; `merge` materializes one tensor per key. Because siblings
+  now hold the *same* tensor, a covariance must be treated as read-only — an in-place write into
+  one is a write into all of them.
+
+- **The engram decomposes each distinct covariance once.** A single-entry factor cache is enough,
+  since layers sharing a covariance are consecutive in iteration order — a per-covariance cache
+  would retain one eigenbasis per distinct matrix (~27 GiB on Qwen3-8B at full rank).
+
+### Added
+
+- `tofu` extra (`pip install ai-engram[tofu]`) for the TOFU benchmark dependencies.
 
 ## [0.9.0] — 2026-08-31
 

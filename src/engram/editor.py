@@ -166,12 +166,16 @@ class EngramEditor:
             for batch in tqdm(
                 dataloader, disable=None, desc="Collecting covariance"
             ):
+                # Unconditionally, not only when a mask_fn exists: the input-sharing window is
+                # only ever valid inside one forward pass. A loader that refills a preallocated
+                # tensor would otherwise be served the previous batch's product.
+                collector.begin_batch()
                 if mask_fn is not None:
                     collector.set_mask(mask_fn(batch))
                 raw_inputs = batch_fn(batch) if batch_fn else batch[0]
                 self._forward(self._move_to_device(raw_inputs))
 
-        return Statistics(collector.covariance_matrices, collector.sample_counts)
+        return Statistics(collector.covariance_matrices, collector.sample_counts).dedupe()
 
     @staticmethod
     def merge_statistics(*stats: Statistics) -> Statistics:
@@ -262,7 +266,7 @@ class EngramEditor:
         modules = dict(self.model.named_modules())
         # Layers sharing an input share their covariance object, so the eigendecomposition is
         # computed once per distinct matrix rather than once per layer.
-        factor_cache: Dict[int, Any] = {}
+        factor_cache: Dict[Any, Any] = {}
         dev = self._model_device  # float32 throughout — float64's pinv is catastrophic on
         prec = torch.float32      # ill-conditioned C_total (see CovarianceCollector).
 
@@ -298,9 +302,13 @@ class EngramEditor:
             else:
                 # factored form: pinv = U_k diag(inv_lam) U_k^T, applied right-to-left so the
                 # D x D inverse is never materialized (identical result, D^2 less memory).
-                ckey = id(total_covariance[layer_name])
+                # Siblings sharing a covariance are consecutive in iteration order, so a
+                # single-entry cache captures the reuse without retaining one U_k per distinct
+                # covariance — which would pin tens of GB on a large model.
+                ckey = (id(total_covariance[layer_name]), N)   # N only matters for cut="mp_n"
                 cached = factor_cache.get(ckey)
                 if cached is None:
+                    factor_cache.clear()
                     cached = spectral_factors(
                         c_total, rank_fraction=rank_fraction, rtol=rtol,
                         method=inverse_solver, floor=rank_floor,
