@@ -1,0 +1,36 @@
+# pip pins of the ai-engram-gh200 environment, installed after
+# torch==2.6.0 from https://download.pytorch.org/whl/cu126 (see
+# replication/scripts/bash/environment/build_env_gh200.sh, which also pins torch
+# as a constraint). ai-engram itself is installed afterwards with --no-deps.
+#
+# Upstream pyproject.toml pins nothing; these are the direct dependencies of the
+# package (core, the `tofu` and `dev` extras) plus what the replication needs.
+# Transitive versions are recorded by the pip freeze the build writes.
+
+# Core: torch (above), tqdm, transformers. Latest 4.x; Llama-3.2 needs no 5.x
+# feature, and 5.x is a major-version break.
+transformers==4.57.6
+tqdm==4.67.1
+
+# `tofu` extra: datasets, scipy, rouge-score, numpy. locuslab/TOFU is plain
+# JSON (no loading script), so datasets needs no trust_remote_code.
+datasets==3.6.0
+scipy==1.15.3
+rouge-score==0.1.2
+numpy==2.2.6
+
+# Missing from the upstream `tofu` extra although
+# engram.benchmarks._tofu_official imports sklearn.metrics.roc_auc_score.
+scikit-learn==1.7.2
+
+# `dev` extra
+pytest==8.4.2
+
+# Replication: experiment logging. Version already working against the W&B
+# server from these nodes (reload-llm-gh200).
+wandb==0.26.1
+
+# ReCAST comparison: the Hugging Face Trainer of phase two requires
+# accelerate>=0.26 (pilot 24955489_0 failed without it). Pure Python; its
+# compiled dependency psutil is already installed through wandb.
+accelerate==1.10.1

@@ -1,0 +1,11 @@
+# The ai-engram-gh200-ds environment: a virtual environment over ai-engram-gh200 (its packages visible as system
+# site packages, pinned as constraints) that adds what OpenUnlearning trained Init Fine. and Retain with (the hub's
+# training_args.bin: DeepSpeed ZeRO 3 with bf16, optim paged_adamw_32bit; pins from requirements.txt of
+# locuslab/open-unlearning at 9be06255). Built by replication/scripts/bash/environment/build_env_ds_gh200.sh.
+
+# Their pin. Installed with --no-build-isolation against the torch of ai-engram-gh200, no ops prebuilt: ZeRO 3 with
+# the Trainer's own optimizer needs none.
+deepspeed==0.15.4
+
+# Their pin 0.44.1 has no aarch64 wheel; 0.46.0 is the first release with one.
+bitsandbytes==0.46.0

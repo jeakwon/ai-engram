@@ -1,0 +1,11 @@
+# Conda base of the ai-engram-gh200 environment (GH200 / aarch64).
+# torch, the pip pins in requirements_gh200.txt and ai-engram itself (editable,
+# --no-deps) are installed on top of it by
+# replication/scripts/bash/environment/build_env_gh200.sh.
+name: ai-engram-gh200
+channels:
+  - conda-forge
+dependencies:
+  # The Python version of the upstream CI (.github/workflows/tests.yml).
+  - python=3.11
+  - pip
